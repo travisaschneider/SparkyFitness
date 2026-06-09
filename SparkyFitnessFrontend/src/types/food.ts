@@ -12,6 +12,9 @@ export interface FoodVariant {
   id?: string;
   serving_size: number;
   serving_unit: string;
+  serving_description?: string;
+  serving_weight?: number;
+  serving_weight_unit?: string;
   calories: number;
   protein: number;
   carbs: number;
@@ -32,7 +35,11 @@ export interface FoodVariant {
   is_default?: boolean;
   is_locked?: boolean;
   glycemic_index?: GlycemicIndex;
-  custom_nutrients?: Record<string, string | number>; // New field for custom nutrients
+  custom_nutrients?: Record<string, string | number>;
+  source?: 'manual' | 'ai_estimate' | 'imported';
+  ai_confidence?: 'high' | 'medium' | 'low' | null;
+  allergens?: string[] | null;
+  traces?: string[] | null;
 }
 
 export interface Food {
@@ -50,7 +57,11 @@ export interface Food {
     | 'fatsecret'
     | 'mealie'
     | 'tandoor'
-    | 'usda';
+    | 'usda'
+    | 'yazio'
+    | 'norish'
+    | 'swissfood';
+  provider_verified?: boolean;
   default_variant?: FoodVariant;
   variants?: FoodVariant[];
   is_quick_food?: boolean;
@@ -115,7 +126,9 @@ export interface FoodEntry {
   iron?: number;
   glycemic_index?: GlycemicIndex;
   serving_size?: number;
-  custom_nutrients?: Record<string, string | number>; // New field for custom nutrients
+  custom_nutrients?: Record<string, string | number>;
+  allergens?: string[] | null;
+  traces?: string[] | null;
 }
 
 export interface CSVData {
@@ -185,10 +198,19 @@ export type NumericFoodVariantKeys = Exclude<
   keyof FoodVariant,
   | 'id'
   | 'serving_unit'
+  | 'serving_description'
+  | 'serving_weight_unit'
   | 'is_default'
   | 'is_locked'
   | 'glycemic_index'
   | 'custom_nutrients'
+  // AI-Assisted Unit Conversions provenance — these are strings/enums, not
+  // numerics, so the form-variant `string | ''` mapping must not include them.
+  | 'user_id'
+  | 'source'
+  | 'ai_confidence'
+  | 'allergens'
+  | 'traces'
 >;
 export interface EquivalentUnit {
   id?: string;

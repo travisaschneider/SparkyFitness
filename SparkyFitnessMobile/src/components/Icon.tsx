@@ -33,6 +33,8 @@ const ICON_MAP = {
   'radio-button-on': { sf: 'circle.inset.filled', ion: 'radio-button-on' },
   'radio-button-off': { sf: 'circle', ion: 'radio-button-off' },
   'camera-reverse': { sf: 'camera.rotate', ion: 'camera-reverse-outline' },
+  'camera': { sf: 'camera', ion: 'camera-outline' },
+  'photo-library': { sf: 'photo.on.rectangle', ion: 'images-outline' },
   'pencil': { sf: 'pencil', ion: 'create-outline' },
   'pause': { sf: 'pause.fill', ion: 'pause' },
   'play': { sf: 'play.fill', ion: 'play' },
@@ -106,6 +108,9 @@ const ICON_MAP = {
   'logs': { sf: 'doc.plaintext', ion: 'document-text-outline' },
   'about': { sf: 'info.circle', ion: 'information-circle-outline' },
   'sparkle': { sf: 'sparkles', ion: 'sparkles-outline' },
+
+  // AI features
+  'sparkles': { sf: 'sparkles', ion: 'sparkles' },
 } as const;
 
 export type IconName = keyof typeof ICON_MAP;

@@ -8,22 +8,25 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import { Trash2, Edit, Lock, Share2, RefreshCw, Link2Off } from 'lucide-react';
-import { getProviderTypes } from '@/utils/settings';
+import { decodeYazioAppId, getProviderTypes } from '@/utils/settings';
 import SyncRangeDialog from './SyncRangeDialog';
 
 import {
   useConnectFitbitMutation,
+  useConnectGoogleHealthMutation,
   useConnectPolarMutation,
   useConnectStravaMutation,
   useConnectWithingsMutation,
   useDisconnectFitbitMutation,
   useDisconnectGarminMutation,
+  useDisconnectGoogleHealthMutation,
   useDisconnectPolarMutation,
   useDisconnectStravaMutation,
   useDisconnectWithingsMutation,
   useManualSyncWithingsMutation,
   useManualSyncFitbitMutation,
   useManualSyncGarminMutation,
+  useManualSyncGoogleHealthMutation,
   useManualSyncPolarMutation,
   useManualSyncStravaMutation,
   useSyncHevyMutation,
@@ -43,12 +46,53 @@ interface ProviderCardProps {
   startEditing: (provider: ExternalDataProvider) => void;
 }
 
+const PROVIDER_PORTALS: Record<string, { label: string; url: string }> = {
+  strava: {
+    label: 'Strava API Settings',
+    url: 'https://www.strava.com/settings/api',
+  },
+  fitbit: {
+    label: 'Fitbit Developer Portal',
+    url: 'https://dev.fitbit.com/apps',
+  },
+  withings: {
+    label: 'Withings Partner Dashboard',
+    url: 'https://partner.withings.com/',
+  },
+  polar: {
+    label: 'Polar Flow Applications',
+    url: 'https://flow.polar.com/settings/applications',
+  },
+  garmin: { label: 'Garmin Connect', url: 'https://connect.garmin.com/' },
+  nutritionix: {
+    label: 'Nutritionix Console',
+    url: 'https://developer.nutritionix.com/',
+  },
+  fatsecret: {
+    label: 'FatSecret Platform Dashboard',
+    url: 'https://platform.fatsecret.com/my-account/dashboard',
+  },
+  usda: {
+    label: 'USDA API Guide',
+    url: 'https://fdc.nal.usda.gov/api-guide.html',
+  },
+  yazio: {
+    label: 'Yazio API Docs',
+    url: 'https://github.com/saganos/yazio_public_api',
+  },
+  openfoodfacts: {
+    label: 'Open Food Facts Portal',
+    url: 'https://world.openfoodfacts.org/',
+  },
+};
+
 export const ProviderCard = ({
   provider,
   isLoading,
   startEditing,
 }: ProviderCardProps) => {
   const { user } = useAuth();
+  const yazioDisplay = decodeYazioAppId(provider.app_id);
   const {
     defaultFoodDataProviderId,
     setDefaultFoodDataProviderId,
@@ -59,6 +103,10 @@ export const ProviderCard = ({
 
   const { mutate: handleConnectFitbit, isPending: isConnectFitbitPending } =
     useConnectFitbitMutation();
+  const {
+    mutate: handleConnectGoogleHealth,
+    isPending: isConnectGoogleHealthPending,
+  } = useConnectGoogleHealthMutation();
   const { mutate: handleConnectPolar, isPending: isConnectPolarPending } =
     useConnectPolarMutation();
   const { mutate: handleConnectStrava, isPending: isConnectStravaPending } =
@@ -70,6 +118,10 @@ export const ProviderCard = ({
     mutate: handleDisconnectFitbit,
     isPending: isDisconnectFitbitPending,
   } = useDisconnectFitbitMutation();
+  const {
+    mutate: handleDisconnectGoogleHealth,
+    isPending: isDisconnectGoogleHealthPending,
+  } = useDisconnectGoogleHealthMutation();
   const {
     mutate: handleDisconnectGarmin,
     isPending: isDisconnectGarminPending,
@@ -95,6 +147,10 @@ export const ProviderCard = ({
     useManualSyncPolarMutation();
   const { mutate: handleManualSyncStrava, isPending: isSyncStravaPending } =
     useManualSyncStravaMutation();
+  const {
+    mutate: handleManualSyncGoogleHealth,
+    isPending: isSyncGoogleHealthPending,
+  } = useManualSyncGoogleHealthMutation();
   const { mutate: syncHevyData, isPending: isSyncHevyPending } =
     useSyncHevyMutation();
 
@@ -125,6 +181,9 @@ export const ProviderCard = ({
       case 'garmin':
         handleManualSyncGarmin({ startDate, endDate });
         break;
+      case 'googlehealth':
+        handleManualSyncGoogleHealth({ startDate, endDate });
+        break;
       case 'hevy':
         syncHevyData({
           fullSync: false,
@@ -141,10 +200,12 @@ export const ProviderCard = ({
     statusPending ||
     deletePending ||
     isConnectFitbitPending ||
+    isConnectGoogleHealthPending ||
     isConnectPolarPending ||
     isConnectStravaPending ||
     isConnectWithingsPending ||
     isDisconnectFitbitPending ||
+    isDisconnectGoogleHealthPending ||
     isDisconnectGarminPending ||
     isDisconnectPolarPending ||
     isDisconnectStravaPending ||
@@ -152,6 +213,7 @@ export const ProviderCard = ({
     isSyncWithingsPending ||
     isSyncFitbitPending ||
     isSyncGarminPending ||
+    isSyncGoogleHealthPending ||
     isSyncPolarPending ||
     isSyncStravaPending ||
     isSyncHevyPending ||
@@ -171,7 +233,9 @@ export const ProviderCard = ({
           data.provider_type === 'fatsecret' ||
           data.provider_type === 'mealie' ||
           data.provider_type === 'tandoor' ||
-          data.provider_type === 'usda')
+          data.provider_type === 'norish' ||
+          data.provider_type === 'usda' ||
+          data.provider_type === 'yazio')
       ) {
         setDefaultFoodDataProviderId(data.id);
       } else if (data && defaultFoodDataProviderId === data.id) {
@@ -232,6 +296,15 @@ export const ProviderCard = ({
           sync: () => setIsSyncDialogOpen(true),
           lastSync: provider.fitbit_last_sync_at,
           tokenExpires: provider.fitbit_token_expires,
+          hasToken: isLinked && provider.is_active,
+        };
+      case 'googlehealth':
+        return {
+          connect: () => handleConnectGoogleHealth(),
+          disconnect: () => handleDisconnectGoogleHealth(),
+          sync: () => setIsSyncDialogOpen(true),
+          lastSync: provider.googlehealth_last_sync_at,
+          tokenExpires: null, // access tokens auto-refresh; showing 1h expiry misleads users
           hasToken: isLinked && provider.is_active,
         };
       case 'polar':
@@ -367,16 +440,40 @@ export const ProviderCard = ({
         <p className="text-sm text-muted-foreground">
           {getProviderTypes().find((t) => t.value === provider.provider_type)
             ?.label || provider.provider_type}
-          {provider.base_url && ` - URL: ${provider.base_url}`}
+          {provider.base_url && (
+            <>
+              {' - URL: '}
+              <a
+                href={provider.base_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-primary hover:underline font-medium"
+              >
+                {provider.base_url}
+              </a>
+            </>
+          )}
           {provider.app_id &&
-            !['mealie', 'tandoor', 'free-exercise-db', 'wger'].includes(
-              provider.provider_type
-            ) &&
-            ` - App ID: ${provider.app_id.substring(0, 4)}...`}
+            ![
+              'mealie',
+              'tandoor',
+              'norish',
+              'free-exercise-db',
+              'wger',
+            ].includes(provider.provider_type) &&
+            ` - App ID: ${
+              provider.provider_type === 'yazio'
+                ? (yazioDisplay.username || yazioDisplay.clientId).substring(
+                    0,
+                    4
+                  )
+                : provider.app_id.substring(0, 4)
+            }...`}
           {provider.app_key &&
             [
               'mealie',
               'tandoor',
+              'norish',
               'nutritionix',
               'fatsecret',
               'withings',
@@ -384,6 +481,73 @@ export const ProviderCard = ({
             ` - App Key: ${provider.app_key.substring(0, 4)}...`}
           {provider.sync_frequency && ` - Sync: ${provider.sync_frequency}`}
         </p>
+
+        {provider.provider_type === 'swissfood' && (
+          <p className="text-xs text-muted-foreground mt-1.5 max-w-2xl leading-relaxed">
+            Supported languages: <strong>English (en)</strong>,{' '}
+            <strong>German (de)</strong>, <strong>French (fr)</strong>, and{' '}
+            <strong>Italian (it)</strong>. Defaults to English if your active
+            language is not supported.{' '}
+            <a
+              href="https://naehrwertdaten.ch/en/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-primary hover:underline font-medium ml-1"
+            >
+              Swiss Food Composition Database
+            </a>
+          </p>
+        )}
+
+        {provider.provider_type === 'free-exercise-db' && (
+          <p className="text-xs text-muted-foreground mt-1.5 max-w-2xl leading-relaxed">
+            Fetches exercise data directly from the community repository at{' '}
+            <a
+              href="https://github.com/yuhonas/free-exercise-db"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-primary hover:underline font-medium"
+            >
+              yuhonas/free-exercise-db on GitHub
+            </a>
+            .
+          </p>
+        )}
+
+        {provider.provider_type === 'wger' && (
+          <p className="text-xs text-muted-foreground mt-1.5 max-w-2xl leading-relaxed">
+            The wger provider is public, free, and requires no credentials. It
+            fetches workout and exercise data directly from the official{' '}
+            <a
+              href="https://wger.de/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-primary hover:underline font-medium"
+            >
+              wger Project Website
+            </a>
+            .
+          </p>
+        )}
+
+        {(() => {
+          const portal = PROVIDER_PORTALS[provider.provider_type];
+          if (!portal) return null;
+          return (
+            <p className="text-xs text-muted-foreground mt-1.5 max-w-2xl leading-relaxed">
+              For more details or to manage your integration, visit the{' '}
+              <a
+                href={portal.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-primary hover:underline font-medium"
+              >
+                {portal.label}
+              </a>
+              .
+            </p>
+          );
+        })()}
 
         {config?.hasToken && (config.lastSync || config.tokenExpires) && (
           <div className="text-sm text-muted-foreground">
@@ -400,11 +564,23 @@ export const ProviderCard = ({
             )}
           </div>
         )}
+
+        {provider.availability_error && (
+          <p className="text-sm text-destructive mt-2">
+            {provider.availability_error}
+          </p>
+        )}
       </div>
 
-      {['fitbit', 'withings', 'polar', 'garmin', 'hevy', 'strava'].includes(
-        provider.provider_type
-      ) && (
+      {[
+        'fitbit',
+        'googlehealth',
+        'withings',
+        'polar',
+        'garmin',
+        'hevy',
+        'strava',
+      ].includes(provider.provider_type) && (
         <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-md p-2 text-xs text-yellow-800 dark:text-yellow-200 mt-2 flex items-center gap-1">
           <strong>Note from CodewithCJ:</strong> I don't own{' '}
           {provider.provider_name} device/subscription.

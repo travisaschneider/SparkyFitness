@@ -16,6 +16,7 @@ export interface UserPreferences {
   water_display_unit?: 'ml' | 'oz' | 'liter';
 
   include_bmr_in_net_calories?: boolean;
+  show_net_carbs?: boolean;
   calorie_goal_adjustment_mode?: string;
   auto_scale_open_food_facts_imports?: boolean;
   auto_scale_online_imports?: boolean;
@@ -30,4 +31,7 @@ export interface UserPreferences {
   item_display_limit?: number;
   language?: string;
   first_day_of_week?: number;
+  /** AI-Assisted Unit Conversions toggle (server default: true). Gates the AI
+   *  estimate path inside the unit selector sheet for cross-category swaps. */
+  ai_assisted_conversions?: boolean;
 }

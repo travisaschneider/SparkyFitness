@@ -2,8 +2,12 @@ import { z } from 'zod/v4';
 
 export const FoodVariantSchema = z.object({
   id: z.string().optional(),
+  user_id: z.string().optional(),
   serving_size: z.number(),
   serving_unit: z.string(),
+  serving_description: z.string().optional(),
+  serving_weight: z.number().optional(),
+  serving_weight_unit: z.string().optional(),
   calories: z.number(),
   protein: z.number(),
   carbs: z.number(),
@@ -26,6 +30,10 @@ export const FoodVariantSchema = z.object({
   custom_nutrients: z
     .record(z.string(), z.union([z.string(), z.number()]))
     .optional(),
+  source: z.enum(['manual', 'ai_estimate', 'imported']).optional(),
+  ai_confidence: z.enum(['high', 'medium', 'low']).nullable().optional(),
+  allergens: z.array(z.string()).nullable().optional(),
+  traces: z.array(z.string()).nullable().optional(),
 });
 
 export type FoodVariant = z.infer<typeof FoodVariantSchema>;
@@ -37,6 +45,7 @@ export const NormalizedFoodSchema = z.object({
   barcode: z.string().optional(),
   provider_external_id: z.string().optional(),
   provider_type: z.string().optional(),
+  provider_verified: z.boolean().optional(),
   is_custom: z.boolean(),
   default_variant: FoodVariantSchema,
   variants: z.array(FoodVariantSchema).optional(),

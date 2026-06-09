@@ -10,6 +10,7 @@ import {
 } from '../integrations/usda/usdaService.js';
 import externalProviderService from '../services/externalProviderService.js';
 import preferenceService from '../services/preferenceService.js';
+import { searchFatSecretByBarcode } from '../integrations/fatsecret/fatsecretService.js';
 import { lookupBarcode } from '../services/foodCoreService.js';
 import { normalizeBarcode } from '../utils/foodUtils.js';
 vi.mock('../models/foodRepository.js');
@@ -47,6 +48,39 @@ vi.mock('../integrations/usda/usdaService.js', async (importOriginal) => {
       // @ts-expect-error TS(2571): Object is of type 'unknown'.
       ...actual.default,
       searchUsdaFoodsByBarcode: mockSearch, // Für Default Import im Service
+    },
+  };
+});
+
+vi.mock(
+  '../integrations/fatsecret/fatsecretService.js',
+  async (importOriginal) => {
+    const actual = await importOriginal();
+    const mockSearch = vi.fn();
+    return {
+      // @ts-expect-error TS(2698): Spread types may only be created from object types... Remove this comment to see the full error message
+      ...actual,
+      searchFatSecretByBarcode: mockSearch, // Für Named Import im Test
+      default: {
+        // @ts-expect-error TS(2571): Object is of type 'unknown'.
+        ...actual.default,
+        searchFatSecretByBarcode: mockSearch, // Für Default Import im Service
+      },
+    };
+  }
+);
+
+vi.mock('../integrations/yazio/yazioService.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  const mockSearch = vi.fn();
+  return {
+    // @ts-expect-error TS(2698): Spread types may only be created from object types... Remove this comment to see the full error message
+    ...actual,
+    searchYazioByBarcode: mockSearch,
+    default: {
+      // @ts-expect-error TS(2571): Object is of type 'unknown'.
+      ...actual.default,
+      searchYazioByBarcode: mockSearch,
     },
   };
 });
@@ -103,6 +137,22 @@ const makeUsdaProvider = (overrides = {}) => ({
   is_active: true,
   ...overrides,
 });
+const TEST_FATSECRET_PROVIDER_ID = 'provider-fatsecret-001';
+const makeFatSecretProvider = (overrides = {}) => ({
+  id: TEST_FATSECRET_PROVIDER_ID,
+  provider_type: 'fatsecret',
+  app_id: 'test-fatsecret-app-id',
+  app_key: 'test-fatsecret-app-key',
+  is_active: true,
+  ...overrides,
+});
+// Mimics the error thrown by assertNoFatSecretApiError for the IP-restriction
+// (code 21) misconfiguration: an HTTP-status-bearing error.
+const makeFatSecretIpError = () =>
+  Object.assign(
+    new Error('FatSecret API error (code 21): Invalid IP address detected'),
+    { status: 502, statusCode: 502, fatSecretErrorCode: 21 }
+  );
 const makeLocalFood = (overrides = {}) => ({
   id: 'food-abc-123',
   name: 'Peanut Butter',
@@ -178,6 +228,8 @@ describe('mapOpenFoodFactsProduct', () => {
         calcium: 0,
         iron: 0,
         is_default: true,
+        allergens: null,
+        traces: null,
       },
     });
   });
@@ -940,5 +992,75 @@ describe('lookupBarcode', () => {
     expect(result.source).toBe('usda');
     expect(result.food.name).toBe('Direct Match');
     expect(searchUsdaFoodsByBarcode).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces a FatSecret misconfiguration instead of not_found when no provider succeeds', async () => {
+    // @ts-expect-error TS(2339): Property 'mockResolvedValue' does not exist on typ... Remove this comment to see the full error message
+    foodRepository.findFoodByBarcode.mockResolvedValue(null);
+    // @ts-expect-error TS(2339): Property 'mockResolvedValue' does not exist on typ... Remove this comment to see the full error message
+    preferenceService.getUserPreferences.mockResolvedValue({
+      default_barcode_provider_id: TEST_FATSECRET_PROVIDER_ID,
+      // Disable the OFF fallback so FatSecret is the only provider tried
+      barcode_fallback_open_food_facts: false,
+    });
+    // @ts-expect-error TS(2339): Property 'mockResolvedValue' does not exist on typ... Remove this comment to see the full error message
+    externalProviderService.getExternalDataProviderDetails.mockResolvedValue(
+      makeFatSecretProvider()
+    );
+    // @ts-expect-error TS(2339): Property 'mockRejectedValue' does not exist on typ... Remove this comment to see the full error message
+    searchFatSecretByBarcode.mockRejectedValue(makeFatSecretIpError());
+    const promise = lookupBarcode(
+      '3017620422003',
+      TEST_USER_ID,
+      TEST_FATSECRET_PROVIDER_ID
+    );
+    await expect(promise).rejects.toThrow('Invalid IP address detected');
+    await expect(promise).rejects.toMatchObject({ statusCode: 502 });
+  });
+
+  it('still returns a fallback result (hiding the FatSecret error) when OFF succeeds', async () => {
+    // @ts-expect-error TS(2339): Property 'mockResolvedValue' does not exist on typ... Remove this comment to see the full error message
+    foodRepository.findFoodByBarcode.mockResolvedValue(null);
+    // @ts-expect-error TS(2339): Property 'mockResolvedValue' does not exist on typ... Remove this comment to see the full error message
+    preferenceService.getUserPreferences.mockResolvedValue({
+      default_barcode_provider_id: TEST_FATSECRET_PROVIDER_ID,
+    });
+    // @ts-expect-error TS(2339): Property 'mockResolvedValue' does not exist on typ... Remove this comment to see the full error message
+    externalProviderService.getExternalDataProviderDetails.mockResolvedValue(
+      makeFatSecretProvider()
+    );
+    // @ts-expect-error TS(2339): Property 'mockRejectedValue' does not exist on typ... Remove this comment to see the full error message
+    searchFatSecretByBarcode.mockRejectedValue(makeFatSecretIpError());
+    // @ts-expect-error TS(2339): Property 'mockResolvedValue' does not exist on typ... Remove this comment to see the full error message
+    searchOpenFoodFactsByBarcodeFields.mockResolvedValue(makeOffResponse());
+    const result = await lookupBarcode(
+      '3017620422003',
+      TEST_USER_ID,
+      TEST_FATSECRET_PROVIDER_ID
+    );
+    expect(result.source).toBe('openfoodfacts');
+    expect(result.food.name).toBe('Nutella');
+  });
+
+  it('still degrades to not_found when FatSecret fails without an HTTP status (e.g. network error)', async () => {
+    // @ts-expect-error TS(2339): Property 'mockResolvedValue' does not exist on typ... Remove this comment to see the full error message
+    foodRepository.findFoodByBarcode.mockResolvedValue(null);
+    // @ts-expect-error TS(2339): Property 'mockResolvedValue' does not exist on typ... Remove this comment to see the full error message
+    preferenceService.getUserPreferences.mockResolvedValue({
+      default_barcode_provider_id: TEST_FATSECRET_PROVIDER_ID,
+      barcode_fallback_open_food_facts: false,
+    });
+    // @ts-expect-error TS(2339): Property 'mockResolvedValue' does not exist on typ... Remove this comment to see the full error message
+    externalProviderService.getExternalDataProviderDetails.mockResolvedValue(
+      makeFatSecretProvider()
+    );
+    // @ts-expect-error TS(2339): Property 'mockRejectedValue' does not exist on typ... Remove this comment to see the full error message
+    searchFatSecretByBarcode.mockRejectedValue(new Error('Network timeout'));
+    const result = await lookupBarcode(
+      '3017620422003',
+      TEST_USER_ID,
+      TEST_FATSECRET_PROVIDER_ID
+    );
+    expect(result).toEqual({ source: 'not_found', food: null });
   });
 });

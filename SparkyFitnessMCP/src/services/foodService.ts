@@ -48,6 +48,12 @@ function getYesterdayDate(): string {
   return addDays(getTodayDate(), -1);
 }
 
+/**
+ * Valid food-related external data provider types.
+ * These are used to filter the lookup cascade so we don't query exercise or health providers.
+ */
+const FOOD_PROVIDER_TYPES = ["fatsecret", "mealie", "tandoor", "norish", "usda", "openfoodfacts"];
+
 export async function searchFood(
   userId: string,
   foodName: string,
@@ -197,29 +203,15 @@ export async function logFood(
         const variantUnit = (v.serving_unit || "serving").toLowerCase();
         const userUnit = (params.unit || "serving").toLowerCase();
         
-        let multiplier: number;
-        if (userUnit === "serving" || userUnit !== variantUnit) {
-          // User is logging servings — each serving = the full variant macros
-          multiplier = params.quantity;
-        } else {
-          // Units match (e.g. both "g") — scale proportionally
-          multiplier = params.quantity / variantServingSize;
-        }
-
-        const scale = (val: unknown) => {
-          const n = Number(val);
-          return isNaN(n) ? null : Math.round(n * multiplier * 10) / 10;
-        };
-
         nutritionData = {
-          calories: scale(v.calories), protein: scale(v.protein),
-          carbs: scale(v.carbs), fat: scale(v.fat),
-          saturated_fat: scale(v.saturated_fat), polyunsaturated_fat: scale(v.polyunsaturated_fat),
-          monounsaturated_fat: scale(v.monounsaturated_fat), trans_fat: scale(v.trans_fat),
-          cholesterol: scale(v.cholesterol), sodium: scale(v.sodium), potassium: scale(v.potassium),
-          dietary_fiber: scale(v.dietary_fiber), sugars: scale(v.sugars),
-          vitamin_a: scale(v.vitamin_a), vitamin_c: scale(v.vitamin_c), calcium: scale(v.calcium),
-          iron: scale(v.iron), glycemic_index: v.glycemic_index,
+          calories: v.calories, protein: v.protein,
+          carbs: v.carbs, fat: v.fat,
+          saturated_fat: v.saturated_fat, polyunsaturated_fat: v.polyunsaturated_fat,
+          monounsaturated_fat: v.monounsaturated_fat, trans_fat: v.trans_fat,
+          cholesterol: v.cholesterol, sodium: v.sodium, potassium: v.potassium,
+          dietary_fiber: v.dietary_fiber, sugars: v.sugars,
+          vitamin_a: v.vitamin_a, vitamin_c: v.vitamin_c, calcium: v.calcium,
+          iron: v.iron, glycemic_index: v.glycemic_index,
         };
       }
     }
@@ -323,6 +315,11 @@ export async function createFood(
       );
       const food = foodResult.rows[0];
 
+      const targetUnit = params.unit || "serving";
+      const countBasedUnits = ["serving", "piece", "slice", "portion", "unit", "can", "bottle", "item", "pack"];
+      const isCountUnit = countBasedUnits.includes(targetUnit.toLowerCase());
+      const targetQuantity = params.quantity || (isCountUnit ? 1 : 100);
+
       // Insert default variant
       const variantResult = await client.query(
         `INSERT INTO food_variants (
@@ -337,8 +334,8 @@ export async function createFood(
                    vitamin_a, vitamin_c, calcium, iron, glycemic_index`,
         [
           food.id,
-          params.quantity || (params.unit === "serving" ? 1 : 100),
-          params.unit || "serving",
+          targetQuantity,
+          targetUnit,
           params.macros.calories,
           params.macros.protein,
           params.macros.carbs,
@@ -368,25 +365,9 @@ export async function createFood(
         const mealTypeId = await resolveMealTypeId(client, userId, params.meal_type);
 
         // Scale macros for the entry (same logic as logFood but simpler since we just created it)
-        const logQuantity = params.quantity || (params.unit === "serving" ? 1 : 100);
+        const logQuantity = params.quantity || (isCountUnit ? 1 : 100);
         const logUnit = params.unit || "serving";
         
-        const variantServingSize = Number(variant.serving_size) || 1;
-        const variantUnit = (variant.serving_unit || "serving").toLowerCase();
-        const userUnit = (logUnit || "serving").toLowerCase();
-        
-        let multiplier: number;
-        if (userUnit === "serving" || userUnit !== variantUnit) {
-          multiplier = logQuantity;
-        } else {
-          multiplier = logQuantity / variantServingSize;
-        }
-
-        const scale = (val: unknown) => {
-          const n = Number(val);
-          return isNaN(n) ? null : Math.round(n * multiplier * 10) / 10;
-        };
-
         const result = await client.query(
           `INSERT INTO food_entries (
              user_id, food_id, variant_id, entry_date, quantity, unit, meal_type_id,
@@ -401,11 +382,11 @@ export async function createFood(
           [
             userId, food.id, variant.id, entryDate, logQuantity, logUnit, mealTypeId,
             food.name, food.brand || null, variant.serving_size, variant.serving_unit,
-            scale(variant.calories), scale(variant.protein), scale(variant.carbs), scale(variant.fat),
-            scale(variant.saturated_fat), scale(variant.polyunsaturated_fat), scale(variant.monounsaturated_fat),
-            scale(variant.trans_fat), scale(variant.cholesterol), scale(variant.sodium), scale(variant.potassium),
-            scale(variant.dietary_fiber), scale(variant.sugars), scale(variant.vitamin_a), scale(variant.vitamin_c),
-            scale(variant.calcium), scale(variant.iron), variant.glycemic_index,
+            variant.calories ?? null, variant.protein ?? null, variant.carbs ?? null, variant.fat ?? null,
+            variant.saturated_fat ?? null, variant.polyunsaturated_fat ?? null, variant.monounsaturated_fat ?? null,
+            variant.trans_fat ?? null, variant.cholesterol ?? null, variant.sodium ?? null, variant.potassium ?? null,
+            variant.dietary_fiber ?? null, variant.sugars ?? null, variant.vitamin_a ?? null, variant.vitamin_c ?? null,
+            variant.calcium ?? null, variant.iron ?? null, variant.glycemic_index,
           ]
         );
         
@@ -576,8 +557,25 @@ export async function listDiary(
     );
 
     const foodEntries: FoodEntry[] = foodResult.rows.map((row: any) => {
-      const calories = Number(row.calories || 0);
-      const displayCalories = energyUnit === "kJ" ? convertEnergy(calories, "kcal", "kJ") : calories;
+      const servingSize = Number(row.serving_size) || 1;
+      const servingUnit = (row.serving_unit || "serving").toLowerCase();
+      const unit = (row.unit || "serving").toLowerCase();
+      const quantity = Number(row.quantity);
+
+      let multiplier: number;
+      if (unit === "serving" || unit !== servingUnit) {
+        multiplier = quantity;
+      } else {
+        multiplier = quantity / servingSize;
+      }
+
+      const scale = (val: unknown) => {
+        const n = Number(val);
+        return isNaN(n) ? 0 : Math.round(n * multiplier * 10) / 10;
+      };
+
+      const scaledCalories = scale(row.calories);
+      const displayCalories = energyUnit === "kJ" ? convertEnergy(scaledCalories, "kcal", "kJ") : scaledCalories;
 
       return {
         id: row.id,
@@ -592,9 +590,9 @@ export async function listDiary(
         nutritional_values: row.calories != null
           ? {
               calories: Math.round(displayCalories),
-              protein: Math.round((Number(row.protein) || 0) * 10) / 10,
-              carbs: Math.round((Number(row.carbs) || 0) * 10) / 10,
-              fat: Math.round((Number(row.fat) || 0) * 10) / 10,
+              protein: scale(row.protein),
+              carbs: scale(row.carbs),
+              fat: scale(row.fat),
             }
           : undefined,
       };
@@ -698,23 +696,23 @@ export async function getNutritionalSummary(
   return withClient(userId, async (client) => {
     const result = await client.query(
       `SELECT entry_date, 
-              SUM(calories) as calories, 
-              SUM(protein) as protein, 
-              SUM(carbs) as carbs, 
-              SUM(fat) as fat,
-              SUM(saturated_fat) as saturated_fat,
-              SUM(polyunsaturated_fat) as polyunsaturated_fat,
-              SUM(monounsaturated_fat) as monounsaturated_fat,
-              SUM(trans_fat) as trans_fat,
-              SUM(cholesterol) as cholesterol,
-              SUM(sodium) as sodium,
-              SUM(potassium) as potassium,
-              SUM(dietary_fiber) as fiber,
-              SUM(sugars) as sugar,
-              SUM(vitamin_a) as vitamin_a,
-              SUM(vitamin_c) as vitamin_c,
-              SUM(calcium) as calcium,
-              SUM(iron) as iron
+              SUM(calories * quantity / NULLIF(serving_size, 0)) as calories, 
+              SUM(protein * quantity / NULLIF(serving_size, 0)) as protein, 
+              SUM(carbs * quantity / NULLIF(serving_size, 0)) as carbs, 
+              SUM(fat * quantity / NULLIF(serving_size, 0)) as fat,
+              SUM(saturated_fat * quantity / NULLIF(serving_size, 0)) as saturated_fat,
+              SUM(polyunsaturated_fat * quantity / NULLIF(serving_size, 0)) as polyunsaturated_fat,
+              SUM(monounsaturated_fat * quantity / NULLIF(serving_size, 0)) as monounsaturated_fat,
+              SUM(trans_fat * quantity / NULLIF(serving_size, 0)) as trans_fat,
+              SUM(cholesterol * quantity / NULLIF(serving_size, 0)) as cholesterol,
+              SUM(sodium * quantity / NULLIF(serving_size, 0)) as sodium,
+              SUM(potassium * quantity / NULLIF(serving_size, 0)) as potassium,
+              SUM(dietary_fiber * quantity / NULLIF(serving_size, 0)) as fiber,
+              SUM(sugars * quantity / NULLIF(serving_size, 0)) as sugar,
+              SUM(vitamin_a * quantity / NULLIF(serving_size, 0)) as vitamin_a,
+              SUM(vitamin_c * quantity / NULLIF(serving_size, 0)) as vitamin_c,
+              SUM(calcium * quantity / NULLIF(serving_size, 0)) as calcium,
+              SUM(iron * quantity / NULLIF(serving_size, 0)) as iron
        FROM food_entries
        WHERE user_id = $1 AND entry_date >= $2 AND entry_date <= $3
        GROUP BY entry_date
@@ -727,6 +725,22 @@ export async function getNutritionalSummary(
       return {
         ...row,
         calories: energyUnit === "kJ" ? convertEnergy(calories, "kcal", "kJ") : calories,
+        protein: Number(row.protein || 0),
+        carbs: Number(row.carbs || 0),
+        fat: Number(row.fat || 0),
+        saturated_fat: Number(row.saturated_fat || 0),
+        polyunsaturated_fat: Number(row.polyunsaturated_fat || 0),
+        monounsaturated_fat: Number(row.monounsaturated_fat || 0),
+        trans_fat: Number(row.trans_fat || 0),
+        cholesterol: Number(row.cholesterol || 0),
+        sodium: Number(row.sodium || 0),
+        potassium: Number(row.potassium || 0),
+        fiber: Number(row.fiber || 0),
+        sugar: Number(row.sugar || 0),
+        vitamin_a: Number(row.vitamin_a || 0),
+        vitamin_c: Number(row.vitamin_c || 0),
+        calcium: Number(row.calcium || 0),
+        iron: Number(row.iron || 0),
         energy_unit: energyUnit,
       };
     });
@@ -972,3 +986,156 @@ export async function saveAsMealTemplate(
     }
   });
 }
+
+/**
+ * Perform a cascade search lookup for food nutrition:
+ * 1. Internal DB
+ * 2. User's active configured external providers (USDA, FatSecret, Mealie, Tandoor, Norish)
+ * 3. Free OpenFoodFacts provider
+ * Returns the matched food details or null if not found (indicating AI estimation fallback).
+ */
+export async function lookupFoodNutrition(
+  userId: string,
+  foodName: string,
+  providerType?: "internal" | "openfoodfacts" | "usda" | "fatsecret" | "mealie" | "tandoor" | "norish"
+): Promise<{
+  source: string;
+  food: any | null;
+  alternatives?: any[];
+}> {
+  // Step 1: Internal DB Search (unless another provider was explicitly requested)
+  if (!providerType || providerType === "internal") {
+    const internalExact = await searchFood(userId, foodName, "exact");
+    if (internalExact.data.length > 0) {
+      return {
+        source: "internal",
+        food: internalExact.data[0],
+        alternatives: internalExact.data.slice(1),
+      };
+    }
+
+    const internalBroad = await searchFood(userId, foodName, "broad");
+    if (internalBroad.data.length > 0) {
+      return {
+        source: "internal",
+        food: internalBroad.data[0],
+        alternatives: internalBroad.data.slice(1),
+      };
+    }
+
+    // If "internal" was explicitly requested and not found, stop here
+    if (providerType === "internal") {
+      return { source: "internal", food: null };
+    }
+  }
+
+  // Obtain database client to query active providers and session tokens
+  return withClient(userId, async (client) => {
+    // Determine which providers to search
+    let targetProviders: { id?: string; provider_type: string; provider_name: string }[] = [];
+
+    if (providerType) {
+      // Explicit provider requested
+      if (providerType === "openfoodfacts") {
+        targetProviders.push({ provider_type: "openfoodfacts", provider_name: "OpenFoodFacts" });
+      } else {
+        const provRes = await client.query(
+          `SELECT id, provider_type, provider_name FROM external_data_providers
+           WHERE user_id = $1 AND provider_type = $2 AND is_active = TRUE LIMIT 1`,
+          [userId, providerType]
+        );
+        if (provRes.rows.length > 0) {
+          targetProviders.push(provRes.rows[0]);
+        } else {
+          // Fallback to unconfigured search if the user explicitly asked but has no row
+          targetProviders.push({ provider_type: providerType, provider_name: providerType });
+        }
+      }
+    } else {
+      // Cascade lookup: get all active providers for the user (filtered to food-related types)
+      const activeRes = await client.query(
+        `SELECT id, provider_type, provider_name FROM external_data_providers
+         WHERE user_id = $1 AND is_active = TRUE 
+         AND provider_type = ANY($2::text[])
+         ORDER BY sort_order ASC NULLS LAST, created_at DESC`,
+        [userId, FOOD_PROVIDER_TYPES]
+      );
+      targetProviders = activeRes.rows;
+
+      // Add OpenFoodFacts as fallback at the end if not already present in configured providers
+      if (!targetProviders.some((p) => p.provider_type === "openfoodfacts")) {
+        targetProviders.push({ provider_type: "openfoodfacts", provider_name: "OpenFoodFacts" });
+      }
+    }
+
+    // Retrieve a valid session token for authentication against the backend API
+    const sessionRes = await client.query(
+      `SELECT token FROM session 
+       WHERE user_id = $1 AND expires_at > NOW() 
+       ORDER BY expires_at DESC LIMIT 1`,
+      [userId]
+    );
+    const sessionToken = sessionRes.rows[0]?.token;
+
+    // Prepare auth headers for SparkyFitness Server request
+    const headers: Record<string, string> = {
+      "Accept": "application/json",
+      "Content-Type": "application/json",
+    };
+    if (sessionToken) {
+      headers["Authorization"] = `Bearer ${sessionToken}`;
+    } else if (process.env.SPARKY_FITNESS_API_KEY) {
+      headers["x-api-key"] = process.env.SPARKY_FITNESS_API_KEY;
+    } else if (process.env.Authorization) {
+      headers["Authorization"] = process.env.Authorization;
+    } else if (process.env.Cookie) {
+      headers["Cookie"] = process.env.Cookie;
+    }
+
+    // Construct server URL using Docker/Local config
+    const host = process.env.SPARKY_FITNESS_SERVER_HOST || "localhost";
+    const port = process.env.SPARKY_FITNESS_SERVER_PORT || "3010";
+    const baseUrl = `http://${host}:${port}`;
+
+    // Loop through providers and perform searches sequentially until we find a match
+    for (const provider of targetProviders) {
+      try {
+        console.log(`[Lookup Cascade] Querying external provider: ${provider.provider_name} (${provider.provider_type})`);
+        const queryParams = new URLSearchParams({ query: foodName });
+        if (provider.id) {
+          queryParams.append("providerId", provider.id);
+        }
+
+        const url = `${baseUrl}/api/v2/foods/search/${provider.provider_type}?${queryParams.toString()}`;
+        const response = await fetch(url, {
+          method: "GET",
+          headers,
+        });
+
+        if (response.ok) {
+          const data: any = await response.json();
+          if (data?.foods && data.foods.length > 0) {
+            console.log(`[Lookup Cascade] Success! Match found in provider: ${provider.provider_name}`);
+            return {
+              source: provider.provider_type,
+              food: data.foods[0],
+              alternatives: data.foods.slice(1),
+            };
+          }
+        } else {
+          console.warn(`[Lookup Cascade] Provider search returned non-200 status: ${response.status} for provider: ${provider.provider_name}`);
+        }
+      } catch (err) {
+        console.error(`[Lookup Cascade] Error searching provider ${provider.provider_name}:`, err);
+      }
+    }
+
+    // Cascade failed to find any external result
+    console.log(`[Lookup Cascade] No matches found in any provider for "${foodName}". Falling back to AI estimate.`);
+    return {
+      source: "ai_estimate",
+      food: null,
+    };
+  });
+}
+

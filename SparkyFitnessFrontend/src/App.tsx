@@ -18,6 +18,7 @@ import AboutDialog from '@/components/AboutDialog';
 import NewReleaseDialog, { ReleaseInfo } from '@/components/NewReleaseDialog';
 import AppSetup from '@/components/AppSetup';
 import { Toaster } from '@/components/ui/toaster';
+import { TooltipProvider } from '@/components/ui/tooltip';
 import {
   createBrowserRouter,
   RouterProvider,
@@ -76,6 +77,9 @@ const WithingsCallback = lazyWithChunkRecovery(
 );
 const FitbitCallback = lazyWithChunkRecovery(
   () => import('@/pages/Integrations/FitbitCallback')
+);
+const GoogleHealthCallback = lazyWithChunkRecovery(
+  () => import('@/pages/Integrations/GoogleHealthCallback')
 );
 const PolarCallback = lazyWithChunkRecovery(
   () => import('@/pages/Integrations/PolarCallback')
@@ -137,77 +141,79 @@ const Root = () => {
 
   return (
     <AuthProvider>
-      <PreferencesProvider>
-        <ThemeProvider>
-          <ActiveUserProvider>
-            <WaterContainerProvider>
-              <LanguageHandler />
-              <AppSetup
-                setLatestRelease={setLatestRelease}
-                setShowNewReleaseDialog={setShowNewReleaseDialog}
-              />
-              <Suspense
-                fallback={
-                  <div className="min-h-screen flex items-center justify-center">
-                    Loading Site...
-                  </div>
-                }
-              >
-                <Outlet context={{ setShowAboutDialog }} />
-              </Suspense>
-              <ErrorBoundary
-                fallback={<ComponentFallback />}
-                onError={(error, { componentStack }) => {
-                  logError(
-                    getUserLoggingLevel(),
-                    'DraggableChatbotButton failed:',
-                    error,
-                    componentStack
-                  );
-                }}
-              >
-                <DraggableChatbotButton />
-              </ErrorBoundary>
-              <ErrorBoundary
-                fallback={<ComponentFallback />}
-                onError={(error, { componentStack }) => {
-                  logError(
-                    getUserLoggingLevel(),
-                    'DraggableChatbotButton failed:',
-                    error,
-                    componentStack
-                  );
-                }}
-              >
-                <AboutDialog
-                  isOpen={showAboutDialog}
-                  onClose={() => setShowAboutDialog(false)}
-                  version={appVersion?.version ?? ''}
+      <TooltipProvider>
+        <PreferencesProvider>
+          <ThemeProvider>
+            <ActiveUserProvider>
+              <WaterContainerProvider>
+                <LanguageHandler />
+                <AppSetup
+                  setLatestRelease={setLatestRelease}
+                  setShowNewReleaseDialog={setShowNewReleaseDialog}
                 />
-              </ErrorBoundary>
-              <ErrorBoundary
-                fallback={<ComponentFallback />}
-                onError={(error, { componentStack }) => {
-                  logError(
-                    getUserLoggingLevel(),
-                    'DraggableChatbotButton failed:',
-                    error,
-                    componentStack
-                  );
-                }}
-              >
-                <NewReleaseDialog
-                  isOpen={showNewReleaseDialog}
-                  onClose={() => setShowNewReleaseDialog(false)}
-                  releaseInfo={latestRelease}
-                  onDismissForVersion={handleDismissRelease}
-                />
-              </ErrorBoundary>
-              <Toaster />
-            </WaterContainerProvider>
-          </ActiveUserProvider>
-        </ThemeProvider>
-      </PreferencesProvider>
+                <Suspense
+                  fallback={
+                    <div className="min-h-screen flex items-center justify-center">
+                      Loading Site...
+                    </div>
+                  }
+                >
+                  <Outlet context={{ setShowAboutDialog }} />
+                </Suspense>
+                <ErrorBoundary
+                  fallback={<ComponentFallback />}
+                  onError={(error, { componentStack }) => {
+                    logError(
+                      getUserLoggingLevel(),
+                      'DraggableChatbotButton failed:',
+                      error,
+                      componentStack
+                    );
+                  }}
+                >
+                  <DraggableChatbotButton />
+                </ErrorBoundary>
+                <ErrorBoundary
+                  fallback={<ComponentFallback />}
+                  onError={(error, { componentStack }) => {
+                    logError(
+                      getUserLoggingLevel(),
+                      'DraggableChatbotButton failed:',
+                      error,
+                      componentStack
+                    );
+                  }}
+                >
+                  <AboutDialog
+                    isOpen={showAboutDialog}
+                    onClose={() => setShowAboutDialog(false)}
+                    version={appVersion?.version ?? ''}
+                  />
+                </ErrorBoundary>
+                <ErrorBoundary
+                  fallback={<ComponentFallback />}
+                  onError={(error, { componentStack }) => {
+                    logError(
+                      getUserLoggingLevel(),
+                      'DraggableChatbotButton failed:',
+                      error,
+                      componentStack
+                    );
+                  }}
+                >
+                  <NewReleaseDialog
+                    isOpen={showNewReleaseDialog}
+                    onClose={() => setShowNewReleaseDialog(false)}
+                    releaseInfo={latestRelease}
+                    onDismissForVersion={handleDismissRelease}
+                  />
+                </ErrorBoundary>
+                <Toaster />
+              </WaterContainerProvider>
+            </ActiveUserProvider>
+          </ThemeProvider>
+        </PreferencesProvider>
+      </TooltipProvider>
     </AuthProvider>
   );
 };
@@ -266,6 +272,11 @@ const router = createBrowserRouter([
       {
         path: '/strava/callback',
         Component: StravaCallback,
+        ErrorBoundary: RootErrorBoundary,
+      },
+      {
+        path: '/googlehealth/callback',
+        Component: GoogleHealthCallback,
         ErrorBoundary: RootErrorBoundary,
       },
       {

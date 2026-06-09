@@ -70,6 +70,18 @@ export type ExternalResultWrapper =
   | {
       provider_type: 'tandoor';
       food: Food;
+    }
+  | {
+      provider_type: 'yazio';
+      food: Food;
+    }
+  | {
+      provider_type: 'norish';
+      food: Food;
+    }
+  | {
+      provider_type: 'swissfood';
+      food: Food;
     };
 
 interface EnhancedFoodSearchProps {
@@ -166,7 +178,7 @@ const EnhancedFoodSearch = ({
     barcodeProviderId ||
     defaultBarcodeProviderId ||
     foodDataProviders.find((p) =>
-      ['openfoodfacts', 'usda', 'fatsecret'].includes(p.provider_type)
+      ['openfoodfacts', 'usda', 'fatsecret', 'yazio'].includes(p.provider_type)
     )?.id ||
     null;
 
@@ -223,7 +235,10 @@ const EnhancedFoodSearch = ({
           | 'usda'
           | 'fatsecret'
           | 'mealie'
-          | 'tandoor';
+          | 'tandoor'
+          | 'yazio'
+          | 'norish'
+          | 'swissfood';
         const mapped: ExternalResultWrapper = {
           provider_type: data.source as BarcodeProviderType,
           food: data.food,
@@ -358,6 +373,39 @@ const EnhancedFoodSearch = ({
         }))
       );
     },
+    yazio: async (term, id) => {
+      const data = await queryClient.fetchQuery(
+        searchFoodsV2Options('yazio', term, id, foodDisplayLimit)
+      );
+      setExternalResults(
+        data.foods.map((food: Food) => ({
+          provider_type: 'yazio' as const,
+          food,
+        }))
+      );
+    },
+    norish: async (term, id) => {
+      const data = await queryClient.fetchQuery(
+        searchFoodsV2Options('norish', term, id)
+      );
+      setExternalResults(
+        data.foods.map((food: Food) => ({
+          provider_type: 'norish' as const,
+          food,
+        }))
+      );
+    },
+    swissfood: async (term, id) => {
+      const data = await queryClient.fetchQuery(
+        searchFoodsV2Options('swissfood', term, id)
+      );
+      setExternalResults(
+        data.foods.map((food: Food) => ({
+          provider_type: 'swissfood' as const,
+          food,
+        }))
+      );
+    },
   };
 
   const handleSearch = async () => {
@@ -422,12 +470,15 @@ const EnhancedFoodSearch = ({
 
   const handleExternalFoodEdit = async (food: Food) => {
     const needsDetailFetch =
-      (food.provider_type === 'fatsecret' || food.provider_type === 'usda') &&
+      (food.provider_type === 'fatsecret' ||
+        food.provider_type === 'usda' ||
+        food.provider_type === 'yazio' ||
+        food.provider_type === 'swissfood') &&
       food.provider_external_id;
 
     if (needsDetailFetch) {
       const providerId = searchProviderId || undefined;
-      if (!providerId) {
+      if (!providerId && food.provider_type !== 'swissfood') {
         // No provider credentials available — data is already complete (barcode flow)
         setEditingProduct(food);
         setShowEditDialog(true);

@@ -6,7 +6,7 @@ import withingsServiceCentral from '../services/withingsService.js';
 const router = express.Router();
 /**
  * @swagger
- * /integrations/withings/authorize:
+ * /withings/authorize:
  *   get:
  *     summary: Initiate Withings OAuth flow
  *     tags: [External Integrations]
@@ -39,7 +39,7 @@ router.get('/authorize', authMiddleware.authenticate, async (req, res) => {
 });
 /**
  * @swagger
- * /integrations/withings/callback:
+ * /withings/callback:
  *   post:
  *     summary: Handle Withings OAuth callback
  *     tags: [External Integrations]
@@ -103,12 +103,25 @@ router.post('/callback', async (req, res) => {
 });
 /**
  * @swagger
- * /integrations/withings/sync:
+ * /withings/sync:
  *   post:
  *     summary: Manually trigger a Withings data sync
  *     tags: [External Integrations]
  *     security:
  *       - cookieAuth: []
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               startDate:
+ *                 type: string
+ *                 description: YYYY-MM-DD start date
+ *               endDate:
+ *                 type: string
+ *                 description: YYYY-MM-DD end date
  *     responses:
  *       200:
  *         description: Sync completed successfully.
@@ -117,9 +130,12 @@ router.post('/sync', authMiddleware.authenticate, async (req, res) => {
   log('info', 'Received request to /withings/sync');
   try {
     const userId = req.userId;
+    const { startDate, endDate } = req.body || {};
     const result = await withingsServiceCentral.syncWithingsData(
       userId,
-      'manual'
+      'manual',
+      startDate,
+      endDate
     );
     log(
       'info',
@@ -143,7 +159,7 @@ router.post('/sync', authMiddleware.authenticate, async (req, res) => {
 });
 /**
  * @swagger
- * /integrations/withings/disconnect:
+ * /withings/disconnect:
  *   post:
  *     summary: Disconnect a Withings account
  *     tags: [External Integrations]
@@ -172,7 +188,7 @@ router.post('/disconnect', authMiddleware.authenticate, async (req, res) => {
 });
 /**
  * @swagger
- * /integrations/withings/status:
+ * /withings/status:
  *   get:
  *     summary: Get Withings connection status and last sync time
  *     tags: [External Integrations]

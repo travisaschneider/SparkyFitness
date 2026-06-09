@@ -41,6 +41,8 @@ export const createFoodVariant = async (
       glycemic_index: variant.glycemic_index,
       is_default: false,
       custom_nutrients: variant.custom_nutrients || {},
+      source: variant.source,
+      ai_confidence: variant.ai_confidence,
     },
   });
 };
@@ -99,9 +101,13 @@ export const saveFood = async (
           vitamin_c: variant.vitamin_c,
           calcium: variant.calcium,
           iron: variant.iron,
-          is_default: variant.is_default || false, // Pass is_default flag
+          is_default: variant.is_default || false,
           glycemic_index: variant.glycemic_index,
-          custom_nutrients: variant.custom_nutrients || {}, // Include custom nutrients
+          custom_nutrients: variant.custom_nutrients || {},
+          source: variant.source,
+          ai_confidence: variant.ai_confidence,
+          allergens: variant.allergens ?? null,
+          traces: variant.traces ?? null,
         },
       });
     }
@@ -132,6 +138,8 @@ export const saveFood = async (
         is_default: variant.is_default || false, // Pass is_default flag
         glycemic_index: variant.glycemic_index,
         custom_nutrients: variant.custom_nutrients || {}, // Include custom nutrients
+        source: variant.source,
+        ai_confidence: variant.ai_confidence,
       }));
       await apiCall('/foods/food-variants/bulk', {
         method: 'POST',
@@ -184,6 +192,8 @@ export const saveFood = async (
       is_default: true, // Explicitly mark as default for new food creation
       glycemic_index: primaryVariant.glycemic_index,
       custom_nutrients: primaryVariant.custom_nutrients || {}, // Include custom nutrients
+      source: primaryVariant.source,
+      ai_confidence: primaryVariant.ai_confidence,
     };
 
     savedFood = await apiCall('/foods', {
@@ -216,6 +226,8 @@ export const saveFood = async (
       is_default: false, // Explicitly mark as not default for additional variants
       glycemic_index: variant.glycemic_index,
       custom_nutrients: variant.custom_nutrients || {}, // Include custom nutrients
+      source: variant.source,
+      ai_confidence: variant.ai_confidence,
     }));
 
     if (additionalVariantsToInsert.length > 0) {

@@ -1,4 +1,3 @@
-import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
   Select,
@@ -12,6 +11,7 @@ import { UserCustomNutrient } from '@/types/customNutrient';
 import type { GlycemicIndex, NumericFoodVariantKeys } from '@/types/food';
 import type { FormFoodVariant } from '@/utils/foodForm';
 import { useTranslation } from 'react-i18next';
+import { NumericInput } from '../NumericInput';
 
 const GLYCEMIC_INDEX_OPTIONS: { value: GlycemicIndex; label: string }[] = [
   { value: 'None', label: 'None' },
@@ -36,7 +36,7 @@ interface NutrientGridProps {
   onUpdate: (
     index: number,
     field: string,
-    value: string | number | boolean | GlycemicIndex
+    value: undefined | number | boolean | GlycemicIndex
   ) => void;
 }
 
@@ -49,25 +49,27 @@ function NutrientInput({
   label,
   value,
   step = '0.1',
+  decimals,
   disabled,
   onChange,
 }: {
   id: string;
   label: string;
-  value: string | number;
+  value: number | undefined;
   step?: string;
+  decimals?: number;
   disabled: boolean;
-  onChange: (val: string) => void;
+  onChange: (val: number | undefined) => void;
 }) {
   return (
     <div>
       <Label htmlFor={id}>{label}</Label>
-      <Input
+      <NumericInput
         id={id}
-        type="number"
         step={step}
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        decimals={decimals}
+        onValueChange={(value) => onChange(value)}
         placeholder="0"
         disabled={disabled}
       />
@@ -86,7 +88,7 @@ export function NutrientGrid({
 }: NutrientGridProps) {
   const { t } = useTranslation();
   const isLocked = variant.is_locked ?? false;
-  const update = (field: string) => (val: string) =>
+  const update = (field: string) => (val: number | undefined) =>
     onUpdate(variantIndex, field, val);
 
   return (
@@ -131,13 +133,14 @@ export function NutrientGrid({
               id={gridId(variantIndex, 'calories')}
               label={`Calories (${energyUnit})`}
               value={
-                variant.calories === ''
-                  ? ''
-                  : Math.round(
+                variant.calories !== undefined
+                  ? Math.round(
                       convertEnergy(variant.calories || 0, 'kcal', energyUnit)
                     )
+                  : undefined
               }
               step="1"
+              decimals={0}
               disabled={isLocked}
               onChange={update('calories')}
             />
@@ -152,8 +155,9 @@ export function NutrientGrid({
               key={key}
               id={gridId(variantIndex, key)}
               label={`${t(cfg.label, { defaultValue: cfg.defaultLabel })} (${cfg.unit})`}
-              value={variant[key as NumericFoodVariantKeys] ?? ''}
+              value={variant[key as NumericFoodVariantKeys]}
               step={cfg.decimals === 0 ? '1' : '0.1'}
+              decimals={cfg.decimals}
               disabled={isLocked}
               onChange={update(key)}
             />
@@ -163,13 +167,15 @@ export function NutrientGrid({
         // --- Custom Nutrients ---
         const cn = customNutrients?.find((n) => n.name === key);
         if (!cn) return null;
+        const value = variant.custom_nutrients?.[cn.name];
 
         return (
           <NutrientInput
             key={key}
             id={gridId(variantIndex, key)}
             label={`${cn.name} (${cn.unit})`}
-            value={variant.custom_nutrients?.[cn.name] ?? ''}
+            value={typeof value === 'number' ? value : undefined}
+            decimals={1}
             disabled={isLocked}
             onChange={update(cn.name)}
           />

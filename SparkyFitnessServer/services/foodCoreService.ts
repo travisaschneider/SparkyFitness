@@ -18,6 +18,7 @@ import {
   searchFatSecretByBarcode,
   mapFatSecretFood,
 } from '../integrations/fatsecret/fatsecretService.js';
+import { searchYazioByBarcode } from '../integrations/yazio/yazioService.js';
 async function searchFoods(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   authenticatedUserId: any,
@@ -751,6 +752,18 @@ async function updateFoodEntriesSnapshot(
 }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function lookupBarcode(barcode: any, userId: any, providerId: any) {
+  // Providers are tried in turn, each failure caught so the next can run.
+  // Capture the first failure carrying an HTTP status (a surfaceable
+  // misconfiguration, e.g. FatSecret's IP error) to report instead of a
+  // misleading "not found" if every provider fails.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let surfaceableError: any = null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const captureSurfaceable = (err: any) => {
+    if (!surfaceableError && err?.status) {
+      surfaceableError = err;
+    }
+  };
   try {
     const localFood = await foodRepository.findFoodByBarcode(barcode, userId);
     if (localFood) {
@@ -809,6 +822,7 @@ async function lookupBarcode(barcode: any, userId: any, providerId: any) {
         }
       } catch (fsError) {
         log('warn', `FatSecret barcode lookup failed for ${barcode}:`, fsError);
+        captureSurfaceable(fsError);
       }
     }
     // Try USDA if provider is configured
@@ -846,6 +860,32 @@ async function lookupBarcode(barcode: any, userId: any, providerId: any) {
         }
       } catch (usdaError) {
         log('warn', `USDA barcode lookup failed for ${barcode}:`, usdaError);
+        captureSurfaceable(usdaError);
+      }
+    }
+    // Try YAZIO if provider is configured. This uses YAZIO's private product
+    // search API and is experimental; failures should not block other providers.
+    if (
+      provider?.provider_type === 'yazio' &&
+      provider.app_id &&
+      provider.app_key
+    ) {
+      try {
+        const yazioFood = await searchYazioByBarcode(barcode, {
+          username: provider.app_id,
+          password: provider.app_key,
+          baseUrl: provider.base_url,
+        });
+        if (yazioFood) {
+          return {
+            source: 'yazio',
+            food: yazioFood,
+            barcode_raw: yazioFood,
+          };
+        }
+      } catch (yazioError) {
+        log('warn', `YAZIO barcode lookup failed for ${barcode}:`, yazioError);
+        captureSurfaceable(yazioError);
       }
     }
     // Try OpenFoodFacts if it is the configured primary provider
@@ -878,6 +918,7 @@ async function lookupBarcode(barcode: any, userId: any, providerId: any) {
           `OpenFoodFacts barcode lookup failed for ${barcode}:`,
           error
         );
+        captureSurfaceable(error);
       }
     }
     // Fall back to OpenFoodFacts if not already tried and user preference allows it
@@ -932,7 +973,12 @@ async function lookupBarcode(barcode: any, userId: any, providerId: any) {
           `OpenFoodFacts lookup failed for barcode ${barcode}:`,
           error
         );
+        captureSurfaceable(error);
       }
+    }
+    // Every provider failed: report a misconfiguration rather than "not found".
+    if (surfaceableError) {
+      throw surfaceableError;
     }
     return { source: 'not_found', food: null };
   } catch (error) {

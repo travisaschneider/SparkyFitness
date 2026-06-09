@@ -44,6 +44,7 @@ import garminRoutes from './routes/garminRoutes.js';
 import withingsRoutes from './routes/withingsRoutes.js';
 import withingsDataRoutes from './routes/withingsDataRoutes.js';
 import fitbitRoutes from './routes/fitbitRoutes.js';
+import googleHealthRoutes from './routes/googleHealthRoutes.js';
 import polarRoutes from './routes/polarRoutes.js';
 import stravaRoutes from './routes/stravaRoutes.js';
 import hevyRoutes from './routes/hevyRoutes.js';
@@ -55,10 +56,11 @@ import globalSettingsRoutes from './routes/globalSettingsRoutes.js';
 import versionRoutes from './routes/versionRoutes.js';
 import onboardingRoutes from './routes/onboardingRoutes.js';
 import customNutrientRoutes from './routes/customNutrientRoutes.js';
+import aiUnitConversionRoutes from './routes/aiUnitConversionRoutes.js';
+import allergenPreferenceRoutes from './routes/allergenPreferenceRoutes.js';
 import { applyMigrations } from './utils/dbMigrations.js';
 import { applyRlsPolicies } from './utils/applyRlsPolicies.js';
 import waterContainerRoutes from './routes/waterContainerRoutes.js';
-// @ts-expect-error TS1192
 import waterIntakeRoutesV2 from './routes/v2/waterIntakeRoutes.js';
 import backupRoutes from './routes/backupRoutes.js';
 import errorHandler from './middleware/errorHandler.js';
@@ -71,6 +73,7 @@ import {
 import externalProviderRepository from './models/externalProviderRepository.js';
 import garminService from './services/garminService.js';
 import fitbitService from './services/fitbitService.js';
+import googleHealthService from './services/googleHealthService.js';
 import polarService from './services/polarService.js';
 import stravaService from './services/stravaService.js';
 // @ts-expect-error TS1192
@@ -103,6 +106,8 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 app.set('trust proxy', 1); // Trust the first proxy immediately in front of me just internal nginx. external not required.
+// 304s from ETag revalidation break the iOS mobile app (#1353).
+app.set('etag', false);
 const PORT = process.env.SPARKY_FITNESS_SERVER_PORT || 3010;
 console.log(
   `DEBUG: SPARKY_FITNESS_FRONTEND_URL is: ${process.env.SPARKY_FITNESS_FRONTEND_URL}`
@@ -208,9 +213,22 @@ const UPLOADS_BASE_DIR = process.env.SPARKY_FITNESS_CUSTOM_UPLOADS_DIRECTORY
   : path.join(__dirname, 'uploads');
 
 console.log('SparkyFitnessServer UPLOADS_BASE_DIR:', UPLOADS_BASE_DIR);
-// Mount at both paths for compatibility during transition
-app.use('/api/uploads', express.static(UPLOADS_BASE_DIR));
-app.use('/uploads', express.static(UPLOADS_BASE_DIR));
+// Mount at both paths for compatibility during transition.
+// Disable etag/lastModified — iOS CFNetwork mis-handles the resulting 304s
+// on freshly uploaded images (#1353). Filenames embed Date.now() so URLs
+// are already effectively immutable; clients still cache by URL.
+const uploadsStaticOptions = { etag: false, lastModified: false };
+app.use('/api/uploads', express.static(UPLOADS_BASE_DIR, uploadsStaticOptions));
+app.use('/uploads', express.static(UPLOADS_BASE_DIR, uploadsStaticOptions));
+// Mounted after uploads so static image Cache-Control isn't clobbered.
+// Skip /api/uploads so the on-demand image route (which falls through static
+// on first download) doesn't get no-store applied to immutable image URLs.
+app.use('/api', (req, res, next) => {
+  if (!req.originalUrl.startsWith('/api/uploads')) {
+    res.setHeader('Cache-Control', 'no-store');
+  }
+  next();
+});
 // On-demand image serving route
 /**
  * @swagger
@@ -302,7 +320,7 @@ app.get(
     );
 
     if (resolvedStatus !== 'NOT_FOUND') {
-      return res.sendFile(localImagePath);
+      return res.sendFile(localImagePath, uploadsStaticOptions);
     }
     // If not found, attempt to re-download. Resolve image paths from the
     // upstream free-exercise-db record (the canonical source) rather than a
@@ -323,7 +341,7 @@ app.get(
         originalRelativeImagePath
       );
       await downloadImage(externalImageUrl, exerciseId);
-      res.sendFile(localImagePath);
+      res.sendFile(localImagePath, uploadsStaticOptions);
     } catch (error) {
       // @ts-expect-error TS18046
       log('error', `Error serving image: ${error.message}`);
@@ -331,17 +349,24 @@ app.get(
     }
   }
 );
+// Computed once at startup — these are static for the lifetime of the process
+const isPublicApiDocsEnabled =
+  process.env.SPARKY_FITNESS_PUBLIC_API_DOCS === 'true';
+const publicRoutes = [
+  '/api/auth/settings',
+  '/api/auth/mfa-factors',
+  '/api/health',
+  '/api/version',
+  '/api/uploads',
+  '/uploads',
+  '/api/ping',
+];
+if (isPublicApiDocsEnabled) {
+  publicRoutes.push('/api/api-docs');
+}
+
 // Apply authentication middleware to all protected routes
 app.use((req, res, next) => {
-  const publicRoutes = [
-    '/api/auth/settings',
-    '/api/auth/mfa-factors',
-    '/api/health',
-    '/api/version',
-    '/api/uploads',
-    '/uploads',
-    '/api/ping',
-  ];
   const isPublic = publicRoutes.some((route) => {
     // Exact match or subpath match with trailing slash to prevent partial matches
     // e.g. "/api/health" matches "/api/health" and "/api/health/" but NOT "/api/health-data"
@@ -362,6 +387,7 @@ app.get('/api/ping', (_req, res) =>
 );
 // Mounting all API routes
 app.use('/api/chat', chatRoutes);
+app.use('/api/ai', aiUnitConversionRoutes);
 app.use('/api/foods', foodRoutes);
 app.use('/api/v2/foods', v2FoodRoutes);
 app.use('/api/v2/exercise-entries', v2ExerciseEntryRoutes);
@@ -402,6 +428,7 @@ app.use('/api/admin/oidc-settings', oidcSettingsRoutes);
 app.use('/api/admin/backup', backupRoutes);
 app.use('/api/integrations/withings/data', withingsDataRoutes);
 app.use('/api/integrations/fitbit', fitbitRoutes);
+app.use('/api/integrations/googlehealth', googleHealthRoutes);
 app.use('/api/integrations/polar', polarRoutes);
 app.use('/api/integrations/strava', stravaRoutes);
 app.use('/api/integrations/hevy', hevyRoutes);
@@ -415,6 +442,7 @@ app.use('/api/workout-presets', workoutPresetRoutes);
 app.use('/api/workout-plan-templates', workoutPlanTemplateRoutes);
 app.use('/api/review', reviewRoutes);
 app.use('/api/custom-nutrients', customNutrientRoutes);
+app.use('/api/allergen-preferences', allergenPreferenceRoutes);
 app.use('/api/adaptive-tdee', adaptiveTdeeRoutes);
 app.use('/api/meal-types', mealTypeRoutes);
 // Swagger
@@ -564,6 +592,31 @@ const schedulePolarSyncs = async () => {
     }
   });
 };
+const scheduleGoogleHealthSyncs = async () => {
+  cron.schedule('0 * * * *', async () => {
+    const providers =
+      await externalProviderRepository.getProvidersByType('googlehealth');
+    for (const provider of providers) {
+      if (provider.is_active && provider.sync_frequency !== 'manual') {
+        try {
+          await googleHealthService.syncGoogleHealthData(
+            provider.user_id,
+            'scheduled'
+          );
+          await externalProviderRepository.updateProviderLastSync(
+            provider.id,
+            new Date()
+          );
+        } catch (error) {
+          console.error(
+            `[CRON] Google Health sync failed for user ${provider.user_id}:`,
+            error
+          );
+        }
+      }
+    }
+  });
+};
 applyMigrations()
   .then(applyRlsPolicies)
   .then(async () => {
@@ -589,6 +642,7 @@ applyMigrations()
     scheduleFitbitSyncs();
     schedulePolarSyncs();
     scheduleStravaSyncs();
+    scheduleGoogleHealthSyncs();
     if (process.env.SPARKY_FITNESS_ADMIN_EMAIL) {
       const adminUser = await userRepository.findUserByEmail(
         process.env.SPARKY_FITNESS_ADMIN_EMAIL

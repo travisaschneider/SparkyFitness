@@ -50,20 +50,26 @@ export const createExternalProvider = async (
         'free-exercise-db',
         'wger',
         'usda',
+        'norish',
       ].includes(payload.provider_type)
         ? null
         : payload.app_id || null,
       app_key: payload.app_key || null,
       is_active: payload.is_active,
-      base_url: ['mealie', 'tandoor', 'free-exercise-db'].includes(
-        payload.provider_type
-      )
+      base_url: [
+        'mealie',
+        'tandoor',
+        'free-exercise-db',
+        'yazio',
+        'norish',
+      ].includes(payload.provider_type)
         ? payload.base_url || null
         : null,
       sync_frequency: [
         'withings',
         'garmin',
         'fitbit',
+        'googlehealth',
         'strava',
         'polar',
       ].includes(payload.provider_type)
@@ -303,6 +309,55 @@ export const handleManualSyncStrava = async (
     });
   } catch (error: unknown) {
     console.error('Error initiating manual Strava sync:', error);
+    throw error;
+  }
+};
+
+export const handleConnectGoogleHealth = async () => {
+  try {
+    const response = await apiCall(`/integrations/googlehealth/authorize`, {
+      method: 'GET',
+    });
+    if (response && response.authUrl) {
+      window.location.href = response.authUrl;
+    } else {
+      throw new Error('Failed to get Google Health authorization URL.');
+    }
+  } catch (error: unknown) {
+    console.error('Error connecting to Google Health:', error);
+    throw error;
+  }
+};
+
+export const handleDisconnectGoogleHealth = async () => {
+  if (
+    !confirm(
+      'Are you sure you want to disconnect from Google Health? This will revoke access and delete all associated tokens.'
+    )
+  )
+    return;
+
+  try {
+    await apiCall(`/integrations/googlehealth/disconnect`, {
+      method: 'POST',
+    });
+  } catch (error: unknown) {
+    console.error('Error disconnecting from Google Health:', error);
+    throw error;
+  }
+};
+
+export const handleManualSyncGoogleHealth = async (
+  startDate?: string,
+  endDate?: string
+) => {
+  try {
+    await apiCall(`/integrations/googlehealth/sync`, {
+      method: 'POST',
+      body: JSON.stringify({ startDate, endDate }),
+    });
+  } catch (error: unknown) {
+    console.error('Error initiating manual Google Health sync:', error);
     throw error;
   }
 };

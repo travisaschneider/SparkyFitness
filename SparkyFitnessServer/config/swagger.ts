@@ -1,5 +1,18 @@
 // @ts-expect-error TS(7016): Could not find a declaration file for module 'swag... Remove this comment to see the full error message
 import swaggerJsdoc from 'swagger-jsdoc';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const swaggerScanPaths = [
+  path.join(__dirname, '../routes/**/*.ts').replace(/\\/g, '/'),
+  path.join(__dirname, '../models/**/*.ts').replace(/\\/g, '/'),
+  path.join(__dirname, '../SparkyFitnessServer.ts').replace(/\\/g, '/'),
+  path.join(__dirname, '../routes/**/*.js').replace(/\\/g, '/'),
+  path.join(__dirname, '../models/**/*.js').replace(/\\/g, '/'),
+  path.join(__dirname, '../SparkyFitnessServer.js').replace(/\\/g, '/'),
+];
+
 const options = {
   definition: {
     openapi: '3.0.0',
@@ -26,6 +39,12 @@ const options = {
           name: 'token',
           description:
             'Authentication token is stored in a secure, HTTP-only cookie named "token". Most endpoints require this for access.',
+        },
+        apiKeyAuth: {
+          type: 'apiKey',
+          in: 'header',
+          name: 'x-api-key',
+          description: 'API key authentication via x-api-key header.',
         },
       },
       schemas: {
@@ -1235,7 +1254,41 @@ const options = {
             },
           },
         },
+        NutritionSummary: {
+          type: 'object',
+          properties: {
+            total_calories: {
+              type: 'number',
+              description: 'Total calories consumed',
+            },
+            total_protein: {
+              type: 'number',
+              description: 'Total protein consumed in grams',
+            },
+            total_carbs: {
+              type: 'number',
+              description: 'Total carbohydrates consumed in grams',
+            },
+            total_fat: {
+              type: 'number',
+              description: 'Total fat consumed in grams',
+            },
+            total_dietary_fiber: {
+              type: 'number',
+              description: 'Total dietary fiber consumed in grams',
+            },
+            total_custom_nutrients: {
+              type: 'object',
+              additionalProperties: {
+                type: 'number',
+              },
+              description: 'Aggregated custom nutrients values',
+            },
+          },
+        },
       },
+    },
+    paths: {
       '/admin/auth/settings/mfa-mandatory': {
         get: {
           tags: ['Identity & Security'],
@@ -1378,6 +1431,9 @@ const options = {
       {
         cookieAuth: [],
       },
+      {
+        apiKeyAuth: [],
+      },
     ],
     tags: [
       {
@@ -1422,12 +1478,65 @@ const options = {
       },
     ],
   },
-  apis: [
-    './routes/*.js',
-    './routes/auth/*.js',
-    './models/*.js',
-    './SparkyFitnessServer.js',
-  ], // Paths to files containing OpenAPI definitions
+  apis: swaggerScanPaths, // Paths to files containing OpenAPI definitions
 };
 const specs = swaggerJsdoc(options);
+
+// Post-process OpenAPI spec to clean up UI:
+// Replace 'cookieAuth' with 'apiKeyAuth' in all route operations and clean up security definitions.
+if (specs) {
+  // 1. Rewrite path security requirements
+  if (specs.paths) {
+    for (const pathKey of Object.keys(specs.paths)) {
+      const pathItem = specs.paths[pathKey];
+      if (pathItem && typeof pathItem === 'object') {
+        for (const method of Object.keys(pathItem)) {
+          const operation = pathItem[method];
+          if (
+            operation &&
+            typeof operation === 'object' &&
+            Array.isArray(operation.security)
+          ) {
+            const hasCookieAuth = operation.security.some(
+              (s: any) =>
+                s && typeof s === 'object' && s.cookieAuth !== undefined
+            );
+            if (hasCookieAuth) {
+              operation.security = operation.security.filter(
+                (s: any) =>
+                  !s || typeof s !== 'object' || s.cookieAuth === undefined
+              );
+              const hasApiKeyAuth = operation.security.some(
+                (s: any) =>
+                  s && typeof s === 'object' && s.apiKeyAuth !== undefined
+              );
+              if (!hasApiKeyAuth) {
+                operation.security.push({ apiKeyAuth: [] });
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // 2. Remove cookieAuth from global security defaults
+  if (Array.isArray(specs.security)) {
+    specs.security = specs.security.filter(
+      (s: any) => !s || typeof s !== 'object' || s.cookieAuth === undefined
+    );
+    const hasApiKeyAuth = specs.security.some(
+      (s: any) => s && typeof s === 'object' && s.apiKeyAuth !== undefined
+    );
+    if (!hasApiKeyAuth) {
+      specs.security.push({ apiKeyAuth: [] });
+    }
+  }
+
+  // 3. Remove cookieAuth from components.securitySchemes
+  if (specs.components && specs.components.securitySchemes) {
+    delete specs.components.securitySchemes.cookieAuth;
+  }
+}
+
 export default specs;

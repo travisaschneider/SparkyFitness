@@ -1,11 +1,11 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { manageExerciseSchema, type ManageExerciseInput } from "../schemas/exercise.js";
+import { manageExerciseSchema, manageExerciseInput, type ManageExerciseInput } from "../schemas/exercise.js";
 import * as exerciseService from "../services/exerciseService.js";
 import { ERRORS } from "../utils/errors.js";
 import { formatList, formatConfirmation } from "../utils/formatting.js";
 import type { ToolResponse, Exercise, ExerciseEntry, ExerciseSet } from "../types.js";
 
-const VALID_ACTIONS = ["search_exercises", "create_exercise", "log_exercise", "list_exercise_diary", "get_workout_presets", "log_workout_preset", "delete_exercise_entry", "get_exercise_details", "create_workout_preset", "get_exercise_progress"];
+const VALID_ACTIONS = ["search_exercises", "create_exercise", "log_exercise", "list_exercise_diary", "get_workout_presets", "log_workout_preset", "update_exercise_entry", "delete_exercise_entry", "get_exercise_details", "create_workout_preset", "get_exercise_progress"];
 
 export function registerExerciseTools(server: McpServer, userId: string): void {
   server.registerTool(
@@ -17,15 +17,19 @@ export function registerExerciseTools(server: McpServer, userId: string): void {
 Actions:
 - search_exercises(searchTerm, muscleGroup?, equipment?, limit?, offset?)
 - create_exercise(name, category?, calories_per_hour?, description?)
-- log_exercise(entry_date, exercise_id?|exercise_name?, duration_minutes?, calories_burned?, notes?, sets?:JSON string or array of [{reps,weight,duration,rest_time,set_type}])
+- log_exercise(entry_date, exercise_id?|exercise_name?, duration_minutes?, calories_burned?, notes?, distance?, avg_heart_rate?, steps?, sets?:JSON string or array of [{reps,weight,duration,rest_time,set_type,rpe,notes}]) — distance/avg_heart_rate/steps are for cardio
 - list_exercise_diary(entry_date)
 - get_workout_presets()
 - log_workout_preset(entry_date, preset_id?|preset_name?)
+- update_exercise_entry(entry_id, entry_date?, duration_minutes?, calories_burned?, notes?, distance?, avg_heart_rate?, steps?, sets?) — only the provided fields change; sets, when provided, replace all existing sets
 - delete_exercise_entry(entry_id)
 - get_exercise_details(exercise_id?|exercise_name?)
 - create_workout_preset(name, exercise_ids)
 - get_exercise_progress(exercise_id?|exercise_name?, start_date?, end_date?) — returns performance history`,
-      inputSchema: manageExerciseSchema,
+      // Publish the flat shape so MCP clients see the available fields.
+      // The SDK cannot serialize z.discriminatedUnion; manageExerciseSchema
+      // is still used below via safeParse for strict per-action validation.
+      inputSchema: manageExerciseInput,
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -34,7 +38,11 @@ Actions:
       },
     },
     async (rawArgs): Promise<ToolResponse> => {
-      const args = rawArgs as unknown as ManageExerciseInput;
+      const parsed = manageExerciseSchema.safeParse(rawArgs);
+      if (!parsed.success) {
+        return ERRORS.VALIDATION(parsed.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).join("; "));
+      }
+      const args: ManageExerciseInput = parsed.data;
       try {
         switch (args.action) {
           case "search_exercises": {
@@ -74,6 +82,9 @@ Actions:
               duration_minutes: args.duration_minutes,
               calories_burned: args.calories_burned,
               notes: args.notes,
+              distance: args.distance,
+              avg_heart_rate: args.avg_heart_rate,
+              steps: args.steps,
               sets: parsedSets,
             });
             return formatConfirmation(
@@ -92,6 +103,26 @@ Actions:
                 if (e.sets.length > 0) text += ` — ${e.sets.length} sets`;
                 if (e.duration_minutes) text += ` | ${e.duration_minutes} min`;
                 if (e.calories_burned) text += ` | ${e.calories_burned} kcal`;
+                if (e.distance != null) text += ` | ${e.distance} dist`;
+                if (e.avg_heart_rate != null) text += ` | ${e.avg_heart_rate} bpm`;
+                if (e.steps != null) text += ` | ${e.steps} steps`;
+                if (e.sets.length > 0) {
+                  const setLine = e.sets
+                    .map((s) => {
+                      const parts: string[] = [];
+                      if (s.reps != null) parts.push(`${s.reps}r`);
+                      if (s.weight != null) parts.push(`${s.weight}kg`);
+                      if (s.duration != null) parts.push(`${s.duration}s`);
+                      if (s.rpe != null) parts.push(`RPE ${s.rpe}`);
+                      let str = parts.join("×");
+                      if (s.rest_time != null) str += ` (rest ${s.rest_time}s)`;
+                      if (s.notes) str += ` (${s.notes})`;
+                      return str;
+                    })
+                    .filter(Boolean)
+                    .join("; ");
+                  if (setLine) text += `\n  Sets: ${setLine}`;
+                }
                 if (e.notes) text += `\n  Notes: ${e.notes}`;
                 text += `\n  ID: ${e.id}`;
                 return text;
@@ -121,6 +152,33 @@ Actions:
               `Workout preset logged for ${args.entry_date}. ${entries.length} exercises added.`,
               { entries_count: entries.length, entry_date: args.entry_date }
             );
+          }
+
+          case "update_exercise_entry": {
+            // Parse sets if it arrives as a JSON string (MCP serialisation quirk), matching log_exercise.
+            let parsedSets: ExerciseSet[] | undefined;
+            if (typeof args.sets === "string") {
+              try {
+                parsedSets = JSON.parse(args.sets);
+              } catch {
+                return ERRORS.VALIDATION("Invalid JSON format for sets");
+              }
+            } else {
+              parsedSets = args.sets as ExerciseSet[] | undefined;
+            }
+            const updated = await exerciseService.updateExerciseEntry(userId, {
+              entry_id: args.entry_id,
+              entry_date: args.entry_date,
+              duration_minutes: args.duration_minutes,
+              calories_burned: args.calories_burned,
+              notes: args.notes,
+              distance: args.distance,
+              avg_heart_rate: args.avg_heart_rate,
+              steps: args.steps,
+              sets: parsedSets,
+            });
+            if (!updated) return ERRORS.NOT_FOUND("Exercise Entry", args.entry_id);
+            return formatConfirmation(`Exercise entry updated.`, { entry_id: args.entry_id });
           }
 
           case "delete_exercise_entry": {

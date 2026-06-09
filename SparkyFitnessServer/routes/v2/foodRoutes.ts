@@ -25,12 +25,22 @@ import {
   mapFatSecretSearchItem,
 } from '../../integrations/fatsecret/fatsecretService.js';
 import {
+  searchYazioFoods,
+  getYazioFoodDetails,
+} from '../../integrations/yazio/yazioService.js';
+import {
+  searchSwissFoods,
+  getSwissFoodDetails,
+} from '../../integrations/swissfood/swissFoodService.js';
+import {
   searchFatSecretFoods,
   getFatSecretNutrients,
   searchMealieFoods,
   getMealieFoodDetails,
   searchTandoorFoods,
   getTandoorFoodDetails,
+  searchNorishFoods,
+  getNorishFoodDetails,
 } from '../../services/foodIntegrationService.js';
 
 const router = express.Router();
@@ -43,6 +53,9 @@ const VALID_PROVIDER_TYPES = [
   'fatsecret',
   'mealie',
   'tandoor',
+  'yazio',
+  'norish',
+  'swissfood',
 ] as const;
 
 type ProviderType = (typeof VALID_PROVIDER_TYPES)[number];
@@ -97,6 +110,10 @@ async function resolveProviderCredentials(
   providerType: ProviderType
 ): Promise<ProviderCredentials> {
   if (providerType === 'openfoodfacts') {
+    return {};
+  }
+
+  if (providerType === 'swissfood' && !providerId) {
     return {};
   }
 
@@ -164,6 +181,16 @@ function normalizeFoodVariantForResponse(variant: unknown): unknown {
   return {
     ...record,
     id: nullToUndefined(record.id as string | null | undefined),
+    user_id: nullToUndefined(record.user_id as string | null | undefined),
+    serving_description: nullToUndefined(
+      record.serving_description as string | null | undefined
+    ),
+    serving_weight: nullToUndefined(
+      record.serving_weight as number | null | undefined
+    ),
+    serving_weight_unit: nullToUndefined(
+      record.serving_weight_unit as string | null | undefined
+    ),
     saturated_fat: nullToUndefined(
       record.saturated_fat as number | null | undefined
     ),
@@ -195,6 +222,12 @@ function normalizeFoodVariantForResponse(variant: unknown): unknown {
         | Record<string, string | number>
         | null
         | undefined
+    ),
+    source: nullToUndefined(
+      record.source as 'manual' | 'ai_estimate' | 'imported' | null | undefined
+    ),
+    ai_confidence: nullToUndefined(
+      record.ai_confidence as 'high' | 'medium' | 'low' | null | undefined
     ),
   };
 }
@@ -411,6 +444,51 @@ const searchHandler: RequestHandler<{ providerType: string }> = async (
         };
         break;
       }
+
+      case 'norish': {
+        const results = await searchNorishFoods(
+          query,
+          credentials.base_url,
+          credentials.app_key,
+
+          req.userId,
+          providerId
+        );
+        foods = results || [];
+        pagination = {
+          page: 1,
+          pageSize: foods.length,
+          totalCount: foods.length,
+          hasMore: false,
+        };
+        break;
+      }
+
+      case 'yazio': {
+        const result = await searchYazioFoods(query, {
+          username: credentials.app_id,
+          password: credentials.app_key,
+          baseUrl: credentials.base_url,
+          page,
+          pageSize,
+        });
+        foods = result.foods || [];
+        pagination = result.pagination;
+        break;
+      }
+
+      case 'swissfood': {
+        const result = await searchSwissFoods(
+          query,
+          page,
+          pageSize,
+          language,
+          credentials.base_url || undefined
+        );
+        foods = result.foods || [];
+        pagination = result.pagination;
+        break;
+      }
     }
 
     const normalizedFoods = foods.map((food) => normalizeFoodForResponse(food));
@@ -546,6 +624,44 @@ const detailHandler: RequestHandler<{
             variants: [variant],
           };
         }
+        break;
+      }
+
+      case 'norish': {
+        const result = await getNorishFoodDetails(
+          externalId,
+          credentials.base_url,
+          credentials.app_key,
+
+          req.userId,
+          providerId
+        );
+        if (result) {
+          const { food: norishFood, variant } = result;
+          food = {
+            ...norishFood,
+            default_variant: variant,
+            variants: [variant],
+          };
+        }
+        break;
+      }
+
+      case 'yazio': {
+        food = await getYazioFoodDetails(externalId, {
+          username: credentials.app_id,
+          password: credentials.app_key,
+          baseUrl: credentials.base_url,
+        });
+        break;
+      }
+
+      case 'swissfood': {
+        food = await getSwissFoodDetails(
+          externalId,
+          language,
+          credentials.base_url || undefined
+        );
         break;
       }
     }

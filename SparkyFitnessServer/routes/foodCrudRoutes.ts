@@ -5,14 +5,20 @@ import foodService from '../services/foodService.js';
 import labelScanService from '../services/labelScanService.js';
 import foodPhotoEstimationService from '../services/foodPhotoEstimationService.js';
 import type { FoodPhotoEstimateErrorCode } from '@workspace/shared';
+import { backfillOffAllergens } from '../utils/backfillAllergens.js';
 const router = express.Router();
 router.use(express.json());
+
+function getErrorMessage(error: unknown): string | null {
+  return error instanceof Error ? error.message : null;
+}
+
 // Apply diary permission check to all food routes
 router.use(checkPermissionMiddleware('diary'));
 // AI-dedicated food search route to handle /api/foods/search
 /**
  * @swagger
- * /food-crud/search:
+ * /foods/search:
  *   get:
  *     summary: Search for foods (AI-dedicated)
  *     tags: [Nutrition & Meals]
@@ -84,7 +90,7 @@ router.get('/search', authenticate, async (req, res, next) => {
 // General food search route (should come before specific ID routes)
 /**
  * @swagger
- * /food-crud:
+ * /foods:
  *   get:
  *     summary: Search for foods
  *     tags: [Nutrition & Meals]
@@ -166,7 +172,7 @@ router.get('/', authenticate, async (req, res, next) => {
 });
 /**
  * @swagger
- * /food-crud:
+ * /foods:
  *   post:
  *     summary: Create a new food
  *     tags: [Nutrition & Meals]
@@ -204,7 +210,7 @@ router.post('/', authenticate, async (req, res, next) => {
 });
 /**
  * @swagger
- * /food-crud/foods-paginated:
+ * /foods/foods-paginated:
  *   get:
  *     summary: Get foods with pagination
  *     tags: [Nutrition & Meals]
@@ -269,7 +275,7 @@ router.get('/foods-paginated', authenticate, async (req, res, next) => {
 });
 /**
  * @swagger
- * /food-crud/food-variants:
+ * /foods/food-variants:
  *   post:
  *     summary: Create a new food variant
  *     tags: [Nutrition & Meals]
@@ -295,7 +301,7 @@ router.get('/foods-paginated', authenticate, async (req, res, next) => {
 router.post('/food-variants', authenticate, async (req, res, next) => {
   try {
     const newVariant = await foodService.createFoodVariant(
-      req.userId,
+      req.authenticatedUserId || req.userId,
       req.body
     );
     res.status(201).json(newVariant);
@@ -315,7 +321,7 @@ router.post('/food-variants', authenticate, async (req, res, next) => {
 });
 /**
  * @swagger
- * /food-crud/food-variants:
+ * /foods/food-variants:
  *   get:
  *     summary: Get food variants by food ID
  *     tags: [Nutrition & Meals]
@@ -358,7 +364,7 @@ router.get('/food-variants', authenticate, async (req, res, next) => {
 });
 /**
  * @swagger
- * /food-crud/food-variants/bulk:
+ * /foods/food-variants/bulk:
  *   post:
  *     summary: Bulk create food variants
  *     tags: [Nutrition & Meals]
@@ -387,22 +393,24 @@ router.post('/food-variants/bulk', authenticate, async (req, res, next) => {
   try {
     const variantsData = req.body;
     const createdVariants = await foodService.bulkCreateFoodVariants(
-      req.userId,
+      req.authenticatedUserId || req.userId,
       variantsData
     );
     res.status(201).json(createdVariants);
   } catch (error) {
-    // @ts-expect-error TS(2571): Object is of type 'unknown'.
-    if (error.message.startsWith('Forbidden')) {
-      // @ts-expect-error TS(2571): Object is of type 'unknown'.
-      return res.status(403).json({ error: error.message });
+    const message = getErrorMessage(error);
+    if (message?.startsWith('Forbidden')) {
+      return res.status(403).json({ error: message });
+    }
+    if (message?.startsWith('Food not found')) {
+      return res.status(404).json({ error: message });
     }
     next(error);
   }
 });
 /**
  * @swagger
- * /food-crud/food-variants/{id}:
+ * /foods/food-variants/{id}:
  *   get:
  *     summary: Get a food variant by ID
  *     tags: [Nutrition & Meals]
@@ -457,7 +465,7 @@ router.get('/food-variants/:id', authenticate, async (req, res, next) => {
 });
 /**
  * @swagger
- * /food-crud/food-variants/{id}:
+ * /foods/food-variants/{id}:
  *   put:
  *     summary: Update a food variant
  *     tags: [Nutrition & Meals]
@@ -500,7 +508,7 @@ router.put('/food-variants/:id', authenticate, async (req, res, next) => {
   }
   try {
     const updatedVariant = await foodService.updateFoodVariant(
-      req.userId,
+      req.authenticatedUserId || req.userId,
       id,
       req.body
     );
@@ -525,7 +533,7 @@ router.put('/food-variants/:id', authenticate, async (req, res, next) => {
 });
 /**
  * @swagger
- * /food-crud/food-variants/{id}:
+ * /foods/food-variants/{id}:
  *   delete:
  *     summary: Delete a food variant
  *     tags: [Nutrition & Meals]
@@ -554,7 +562,10 @@ router.delete('/food-variants/:id', authenticate, async (req, res, next) => {
     return res.status(400).json({ error: 'Food Variant ID is required.' });
   }
   try {
-    await foodService.deleteFoodVariant(req.userId, id);
+    await foodService.deleteFoodVariant(
+      req.authenticatedUserId || req.userId,
+      id
+    );
     res.status(200).json({ message: 'Food variant deleted successfully.' });
   } catch (error) {
     // @ts-expect-error TS(2571): Object is of type 'unknown'.
@@ -576,11 +587,11 @@ router.delete('/food-variants/:id', authenticate, async (req, res, next) => {
 });
 /**
  * @swagger
- * /food-crud/barcode/{barcode}:
+ * /foods/barcode/{barcode}:
  *   get:
  *     summary: Look up a food by barcode
  *     tags: [Nutrition & Meals]
- *     description: Checks the local database first, then queries an external barcode provider (USDA or OpenFoodFacts). The provider can be specified via the providerId query parameter or the user's default_barcode_provider_id preference. If the chosen provider returns no results, OpenFoodFacts is tried as a fallback.
+ *     description: Checks the local database first, then queries an external barcode provider (USDA, FatSecret, YAZIO, or OpenFoodFacts). The provider can be specified via the providerId query parameter or the user's default_barcode_provider_id preference. If the chosen provider returns no results, OpenFoodFacts is tried as a fallback.
  *     parameters:
  *       - in: path
  *         name: barcode
@@ -604,7 +615,7 @@ router.delete('/food-variants/:id', authenticate, async (req, res, next) => {
  *               properties:
  *                 source:
  *                   type: string
- *                   enum: [local, openfoodfacts, usda, fatsecret, not_found]
+ *                   enum: [local, openfoodfacts, usda, fatsecret, yazio, not_found]
  *                 food:
  *                   $ref: '#/components/schemas/Food'
  *       400:
@@ -660,6 +671,15 @@ const ALLOWED_PHOTO_MIME_TYPES = new Set([
 const MAX_BASE64_IMAGE_LENGTH = 8 * 1024 * 1024;
 const MAX_DESCRIPTION_LENGTH = 500;
 const OZ_TO_GRAMS = 28.3495;
+const MAX_PHOTO_IMAGES = (() => {
+  const raw = Number(process.env.AI_PHOTO_ESTIMATE_MAX_IMAGES);
+  return Number.isInteger(raw) && raw > 0 ? raw : 6;
+})();
+// Cap the combined base64 payload across all images. The per-image 8MB limit
+// alone allows up to MAX_PHOTO_IMAGES * 8MB, which (parsed, mapped, and
+// re-stringified for the provider) can spike memory enough to OOM a small box
+// under concurrent load.
+const MAX_TOTAL_BASE64_LENGTH = 24 * 1024 * 1024;
 
 const PHOTO_ESTIMATION_ERROR_HTTP_STATUS: Record<
   FoodPhotoEstimateErrorCode,
@@ -682,31 +702,74 @@ router.post(
   authenticate,
   checkPermissionMiddleware('diary'),
   async (req, res, next) => {
-    const { image, mime_type, description, total_weight, weight_unit } =
+    const { image, mime_type, images, description, total_weight, weight_unit } =
       req.body ?? {};
 
-    if (typeof image !== 'string' || image.length === 0) {
+    // Normalize to an array of { image, mime_type } entries. Accepts the
+    // multi-image `images[]` shape or the legacy single `image`/`mime_type`
+    // fields (kept for backward compatibility).
+    let rawImages: unknown[];
+    if (images !== undefined) {
+      if (!Array.isArray(images) || images.length === 0) {
+        return res.status(400).json({
+          error: 'images must be a non-empty array.',
+          code: 'INVALID_REQUEST',
+        });
+      }
+      rawImages = images;
+    } else if (image !== undefined || mime_type !== undefined) {
+      rawImages = [{ image, mime_type }];
+    } else {
       return res
         .status(400)
         .json({ error: 'image is required.', code: 'INVALID_REQUEST' });
     }
-    if (typeof mime_type !== 'string' || mime_type.length === 0) {
-      return res
-        .status(400)
-        .json({ error: 'mime_type is required.', code: 'INVALID_REQUEST' });
-    }
-    if (image.length > MAX_BASE64_IMAGE_LENGTH) {
+
+    if (rawImages.length > MAX_PHOTO_IMAGES) {
       return res.status(400).json({
-        error: 'image exceeds the maximum allowed size of 8MB (base64).',
-        code: 'IMAGE_TOO_LARGE',
+        error: `A maximum of ${MAX_PHOTO_IMAGES} images is allowed per estimate.`,
+        code: 'INVALID_REQUEST',
       });
     }
-    if (!ALLOWED_PHOTO_MIME_TYPES.has(mime_type)) {
-      return res.status(400).json({
-        error: `Unsupported mime_type '${mime_type}'. Allowed: ${[...ALLOWED_PHOTO_MIME_TYPES].join(', ')}.`,
-        code: 'UNSUPPORTED_MIME_TYPE',
-      });
+
+    const photoImages: { base64: string; mimeType: string }[] = [];
+    let totalBase64Length = 0;
+    for (const entry of rawImages) {
+      const img = (entry as { image?: unknown } | null)?.image;
+      const mt = (entry as { mime_type?: unknown } | null)?.mime_type;
+      if (typeof img !== 'string' || img.length === 0) {
+        return res
+          .status(400)
+          .json({ error: 'image is required.', code: 'INVALID_REQUEST' });
+      }
+      if (typeof mt !== 'string' || mt.length === 0) {
+        return res
+          .status(400)
+          .json({ error: 'mime_type is required.', code: 'INVALID_REQUEST' });
+      }
+      if (img.length > MAX_BASE64_IMAGE_LENGTH) {
+        return res.status(400).json({
+          error: 'image exceeds the maximum allowed size of 8MB (base64).',
+          code: 'IMAGE_TOO_LARGE',
+        });
+      }
+      totalBase64Length += img.length;
+      if (totalBase64Length > MAX_TOTAL_BASE64_LENGTH) {
+        return res.status(400).json({
+          error:
+            'The combined size of all images exceeds the allowed limit of 24MB (base64).',
+          code: 'IMAGE_TOO_LARGE',
+        });
+      }
+      if (!ALLOWED_PHOTO_MIME_TYPES.has(mt)) {
+        return res.status(400).json({
+          error: `Unsupported mime_type '${mt}'. Allowed: ${[...ALLOWED_PHOTO_MIME_TYPES].join(', ')}.`,
+          code: 'UNSUPPORTED_MIME_TYPE',
+        });
+      }
+      photoImages.push({ base64: img, mimeType: mt });
     }
+
     if (description !== undefined) {
       if (
         typeof description !== 'string' ||
@@ -757,8 +820,7 @@ router.post(
     try {
       const result =
         await foodPhotoEstimationService.estimateFoodPhotoNutrition({
-          base64Image: image,
-          mimeType: mime_type,
+          images: photoImages,
           userId: req.userId,
           description: typeof description === 'string' ? description : '',
           weightSlot,
@@ -777,7 +839,7 @@ router.post(
 );
 /**
  * @swagger
- * /food-crud/{foodId}:
+ * /foods/{foodId}:
  *   get:
  *     summary: Get a food by ID
  *     tags: [Nutrition & Meals]
@@ -828,7 +890,7 @@ router.get('/:foodId', authenticate, async (req, res, next) => {
 });
 /**
  * @swagger
- * /food-crud/{id}:
+ * /foods/{id}:
  *   put:
  *     summary: Update a food
  *     tags: [Nutrition & Meals]
@@ -885,7 +947,7 @@ router.put('/:id', authenticate, async (req, res, next) => {
 });
 /**
  * @swagger
- * /food-crud/{id}/deletion-impact:
+ * /foods/{id}/deletion-impact:
  *   get:
  *     summary: Get food deletion impact
  *     tags: [Nutrition & Meals]
@@ -932,7 +994,7 @@ router.get('/:id/deletion-impact', authenticate, async (req, res, next) => {
 });
 /**
  * @swagger
- * /food-crud/{id}:
+ * /foods/{id}:
  *   delete:
  *     summary: Delete a food
  *     tags: [Nutrition & Meals]
@@ -1005,7 +1067,7 @@ router.delete('/:id', authenticate, async (req, res, next) => {
 });
 /**
  * @swagger
- * /food-crud/import-from-csv:
+ * /foods/import-from-csv:
  *   post:
  *     summary: Import foods from CSV
  *     tags: [Nutrition & Meals]
@@ -1041,7 +1103,7 @@ router.post('/import-from-csv', authenticate, async (req, res, next) => {
 });
 /**
  * @swagger
- * /food-crud/needs-review:
+ * /foods/needs-review:
  *   get:
  *     summary: Get foods needing review
  *     tags: [Nutrition & Meals]
@@ -1068,7 +1130,7 @@ router.get('/needs-review', authenticate, async (req, res, next) => {
 });
 /**
  * @swagger
- * /food-crud/update-snapshot:
+ * /foods/update-snapshot:
  *   post:
  *     summary: Update food entries snapshot
  *     tags: [Nutrition & Meals]
@@ -1108,4 +1170,14 @@ router.post('/update-snapshot', authenticate, async (req, res, next) => {
     next(error);
   }
 });
+
+router.post('/sync-allergens', authenticate, async (req, res, next) => {
+  try {
+    const result = await backfillOffAllergens(req.userId);
+    res.status(200).json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
 export default router;

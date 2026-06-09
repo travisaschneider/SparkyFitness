@@ -124,11 +124,34 @@ export const EditProviderForm = ({
             leave the fields blank. Note that credentials cannot be combined
             with publicly sharing this provider row.
           </p>
+          <p className="text-sm text-muted-foreground col-span-2">
+            Open Food Facts is a community-driven database that supports
+            localization. Sparky automatically queries products in your active
+            language setting in SparkyFitness. For more information, visit the{' '}
+            <a
+              href="https://world.openfoodfacts.org/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-primary hover:underline font-medium"
+            >
+              Open Food Facts Portal
+            </a>{' '}
+            or learn about language support in the{' '}
+            <a
+              href="https://en.wiki.openfoodfacts.org/Translations"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-primary hover:underline font-medium"
+            >
+              Open Food Facts Translations Wiki
+            </a>
+            .
+          </p>
         </>
       )}
       {(editData.provider_type === 'mealie' ||
         editData.provider_type === 'tandoor' ||
-        editData.provider_type === 'free-exercise-db') && (
+        editData.provider_type === 'norish') && (
         <>
           <div>
             <Label>App URL</Label>
@@ -142,9 +165,11 @@ export const EditProviderForm = ({
                 }))
               }
               placeholder={
-                editData.provider_type === 'tandoor'
-                  ? 'e.g., http://your-tandoor-instance.com'
-                  : 'e.g., http://your-mealie-instance.com'
+                editData.provider_type === 'norish'
+                  ? 'e.g., https://norish.your-domain.com'
+                  : editData.provider_type === 'tandoor'
+                    ? 'e.g., http://your-tandoor-instance.com'
+                    : 'e.g., http://your-mealie-instance.com'
               }
               autoComplete="off"
             />
@@ -161,9 +186,11 @@ export const EditProviderForm = ({
                 }))
               }
               placeholder={
-                editData.provider_type === 'tandoor'
-                  ? 'Enter Tandoor API Key'
-                  : 'Enter Mealie API Key'
+                editData.provider_type === 'norish'
+                  ? 'Enter Norish API Key'
+                  : editData.provider_type === 'tandoor'
+                    ? 'Enter Tandoor API Key'
+                    : 'Enter Mealie API Key'
               }
               autoComplete="off"
             />
@@ -210,6 +237,101 @@ export const EditProviderForm = ({
               take up to 24 hours.
             </p>
           )}
+        </>
+      )}
+      {editData.provider_type === 'yazio' && (
+        <>
+          <div className="col-span-2">
+            <div className="rounded-md border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/40 p-3 space-y-1.5">
+              <p className="text-sm font-semibold text-red-800 dark:text-red-200">
+                ⚠️ Unofficial API — Use at your own risk
+              </p>
+              <p className="text-sm text-red-700 dark:text-red-300">
+                YAZIO integration uses an{' '}
+                <strong>unofficial, undocumented API</strong> that is not
+                provided or endorsed by YAZIO. Using it may{' '}
+                <strong>risk getting your YAZIO account banned</strong>. The API
+                could also <strong>stop working at any time</strong> without
+                notice if YAZIO changes their backend.
+              </p>
+              <p className="text-sm text-red-700 dark:text-red-300">
+                For more information & client credentials, see{' '}
+                <a
+                  href="https://github.com/saganos/yazio_public_api"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-red-800 dark:text-red-200 underline font-medium"
+                >
+                  saganos/yazio_public_api
+                </a>
+                .
+              </p>
+            </div>
+          </div>
+          <div>
+            <Label>YAZIO Email / Username (Optional)</Label>
+            <Input
+              type="text"
+              value={editData.app_id || ''}
+              onChange={(e) =>
+                setEditData((prev) => ({
+                  ...prev,
+                  app_id: e.target.value,
+                }))
+              }
+              placeholder="Enter YAZIO email or username"
+              autoComplete="username"
+            />
+          </div>
+          <div>
+            <Label>YAZIO Password (Optional)</Label>
+            <Input
+              type="password"
+              value={editData.app_key || ''}
+              onChange={(e) =>
+                setEditData((prev) => ({
+                  ...prev,
+                  app_key: e.target.value,
+                }))
+              }
+              placeholder="Leave blank to keep existing password"
+              autoComplete="current-password"
+            />
+          </div>
+          <p className="text-sm text-muted-foreground col-span-2">
+            Email and password are optional. Only Client ID and Client Secret
+            are required.
+          </p>
+          <div>
+            <Label>YAZIO Client ID</Label>
+            <Input
+              type="text"
+              value={editData.yazio_client_id || ''}
+              onChange={(e) =>
+                setEditData((prev) => ({
+                  ...prev,
+                  yazio_client_id: e.target.value,
+                }))
+              }
+              placeholder="Enter YAZIO Client ID"
+              autoComplete="off"
+            />
+          </div>
+          <div>
+            <Label>YAZIO Client Secret</Label>
+            <Input
+              type="password"
+              value={editData.yazio_client_secret || ''}
+              onChange={(e) =>
+                setEditData((prev) => ({
+                  ...prev,
+                  yazio_client_secret: e.target.value,
+                }))
+              }
+              placeholder="Leave blank to keep existing client secret"
+              autoComplete="off"
+            />
+          </div>
         </>
       )}
       {editData.provider_type === 'nutritionix' && (
@@ -538,6 +660,84 @@ export const EditProviderForm = ({
           </p>
         </>
       )}
+      {editData.provider_type === 'googlehealth' && (
+        <>
+          <div>
+            <Label>Client ID</Label>
+            <Input
+              type="text"
+              value={editData.app_id || ''}
+              onChange={(e) =>
+                setEditData((prev) => ({
+                  ...prev,
+                  app_id: e.target.value,
+                }))
+              }
+              placeholder="Enter Google Cloud Client ID"
+              autoComplete="off"
+            />
+          </div>
+          <div>
+            <Label>Client Secret</Label>
+            <Input
+              type="password"
+              value={editData.app_key || ''}
+              onChange={(e) =>
+                setEditData((prev) => ({
+                  ...prev,
+                  app_key: e.target.value,
+                }))
+              }
+              placeholder="Enter Google Cloud Client Secret"
+              autoComplete="off"
+            />
+          </div>
+          <p className="text-sm text-muted-foreground col-span-2">
+            Google Health integration uses OAuth2. After saving, click{' '}
+            <strong>Connect</strong> on the provider card to authorize access.
+            <br />
+            In your{' '}
+            <a
+              href="https://console.cloud.google.com/apis/credentials"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-blue-500 underline"
+            >
+              Google Cloud Console
+            </a>
+            , your OAuth 2.0 Web Application client must have this callback URL:
+            <strong className="flex items-center mt-1">
+              {`${window.location.origin}/googlehealth/callback`}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="ml-2 h-5 w-5"
+                onClick={(e) => {
+                  e.preventDefault();
+                  if (navigator.clipboard) {
+                    navigator.clipboard.writeText(
+                      `${window.location.origin}/googlehealth/callback`
+                    );
+                    toast({
+                      title: 'Copied!',
+                      description: 'Callback URL copied to clipboard.',
+                    });
+                  } else {
+                    toast({
+                      title: 'Copy Failed',
+                      description:
+                        'Clipboard access requires a secure context (HTTPS).',
+                      variant: 'destructive',
+                    });
+                  }
+                }}
+              >
+                <Clipboard className="h-4 w-4" />
+              </Button>
+            </strong>
+          </p>
+        </>
+      )}
       {editData.provider_type === 'hevy' && (
         <>
           <div>
@@ -563,6 +763,7 @@ export const EditProviderForm = ({
       {(editData.provider_type === 'withings' ||
         editData.provider_type === 'garmin' ||
         editData.provider_type === 'fitbit' ||
+        editData.provider_type === 'googlehealth' ||
         editData.provider_type === 'strava' ||
         editData.provider_type === 'polar' ||
         editData.provider_type === 'hevy') && (
@@ -588,6 +789,69 @@ export const EditProviderForm = ({
           </Select>
         </div>
       )}
+      {editData.provider_type === 'swissfood' && (
+        <div className="col-span-2 space-y-2">
+          <p className="text-sm text-muted-foreground">
+            The Swiss Food Composition Database API is free, public, and
+            requires no credentials. Supported languages for searches and
+            nutritional value labels are <strong>English (en)</strong>,{' '}
+            <strong>German (de)</strong>, <strong>French (fr)</strong>, and{' '}
+            <strong>Italian (it)</strong>.
+          </p>
+          <p className="text-sm text-muted-foreground">
+            If your active language in SparkyFitness is not supported, the API
+            queries will default to English. For more details, see the official
+            portal at{' '}
+            <a
+              href="https://naehrwertdaten.ch/en/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-primary hover:underline font-medium"
+            >
+              Swiss Food Composition Database
+            </a>
+            .
+          </p>
+        </div>
+      )}
+
+      {editData.provider_type === 'free-exercise-db' && (
+        <div className="col-span-2 space-y-2">
+          <p className="text-sm text-muted-foreground">
+            The Free Exercise DB provider is public, free, and requires no
+            credentials. It fetches exercise data directly from the community
+            repository at{' '}
+            <a
+              href="https://github.com/yuhonas/free-exercise-db"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-primary hover:underline font-medium"
+            >
+              yuhonas/free-exercise-db on GitHub
+            </a>
+            .
+          </p>
+        </div>
+      )}
+
+      {editData.provider_type === 'wger' && (
+        <div className="col-span-2 space-y-2">
+          <p className="text-sm text-muted-foreground">
+            The wger provider is public, free, and requires no credentials. It
+            fetches workout and exercise data directly from the official{' '}
+            <a
+              href="https://wger.de/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-primary hover:underline font-medium"
+            >
+              wger Project Website
+            </a>
+            .
+          </p>
+        </div>
+      )}
+
       <div className="flex items-center space-x-2">
         <Switch
           checked={editData.is_active || false}
