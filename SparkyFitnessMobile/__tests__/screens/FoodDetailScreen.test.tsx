@@ -1,5 +1,6 @@
 import React from 'react';
 import { render, fireEvent, waitFor } from '@testing-library/react-native';
+import { pressAction } from './helpers/nativeHeaderTestUtils';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import FoodDetailScreen from '../../src/screens/FoodDetailScreen';
 import { useDeleteFood, useFoodVariants, useProfile, useServerConnection } from '../../src/hooks';
@@ -10,11 +11,20 @@ jest.mock('../../src/hooks', () => ({
   useProfile: jest.fn(),
   useServerConnection: jest.fn(),
   usePreferences: jest.fn(() => ({ preferences: undefined, isLoading: false, isError: false, refetch: jest.fn() })),
+  useCustomNutrients: jest.fn(() => ({ customNutrients: [], isLoading: false, isError: false, refetch: jest.fn() })),
 }));
 
 jest.mock('../../src/components/ActiveWorkoutBar', () => ({
   useActiveWorkoutBarPadding: jest.fn(() => 0),
 }));
+
+jest.mock('../../src/components/MacroCompositionRing', () => {
+  const { View } = require('react-native');
+  return {
+    __esModule: true,
+    default: () => <View testID="macro-composition-ring" />,
+  };
+});
 
 jest.mock('uniwind', () => ({
   useCSSVariable: (keys: string | string[]) =>
@@ -50,6 +60,17 @@ jest.mock('../../src/components/BottomSheetPicker', () => {
   };
 });
 
+const mockNavigation = {
+  setOptions: jest.fn(),
+  goBack: jest.fn(),
+  navigate: jest.fn(),
+  setParams: jest.fn(),
+} as any;
+jest.mock('@react-navigation/native', () => ({
+  ...jest.requireActual('@react-navigation/native'),
+  useNavigation: () => mockNavigation,
+}));
+
 const mockUseFoodVariants = useFoodVariants as jest.MockedFunction<typeof useFoodVariants>;
 const mockUseDeleteFood = useDeleteFood as jest.MockedFunction<typeof useDeleteFood>;
 const mockUseProfile = useProfile as jest.MockedFunction<typeof useProfile>;
@@ -60,11 +81,7 @@ const insets = { top: 0, bottom: 0, left: 0, right: 0 };
 const frame = { x: 0, y: 0, width: 390, height: 844 };
 
 describe('FoodDetailScreen', () => {
-  const navigation = {
-    goBack: jest.fn(),
-    navigate: jest.fn(),
-    setParams: jest.fn(),
-  } as any;
+  const navigation = mockNavigation;
 
   const baseItem = {
     id: 'food-1',
@@ -214,7 +231,7 @@ describe('FoodDetailScreen', () => {
     const screen = renderScreen();
 
     fireEvent.press(screen.getAllByText('2 cup (200 cal)')[0]);
-    fireEvent.press(screen.getByText('Edit'));
+    pressAction(screen, navigation, 'Edit');
 
     expect(navigation.navigate).toHaveBeenCalledWith(
       'FoodForm',

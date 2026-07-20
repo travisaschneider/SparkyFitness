@@ -3,7 +3,6 @@ import {
   itemConfidenceLabels,
   confidenceTones,
   mapEstimateError,
-  foodPhotoProviderLabel,
 } from '../../src/utils/foodPhotoEstimate';
 
 describe('foodPhotoEstimate', () => {
@@ -64,21 +63,12 @@ describe('foodPhotoEstimate', () => {
       expect(copy.title.toLowerCase()).toContain('timed out');
       expect(copy.message.toLowerCase()).toContain('too long');
     });
-  });
 
-  describe('foodPhotoProviderLabel', () => {
-    test('returns the display label for supported providers', () => {
-      expect(foodPhotoProviderLabel('google')).toBe('Google Gemini');
-      expect(foodPhotoProviderLabel('openai')).toBe('OpenAI');
-      expect(foodPhotoProviderLabel('anthropic')).toBe('Anthropic');
-    });
-
-    test('returns null for unsupported providers and null/undefined input', () => {
-      expect(foodPhotoProviderLabel('mistral')).toBeNull();
-      expect(foodPhotoProviderLabel('ollama')).toBeNull();
-      expect(foodPhotoProviderLabel(null)).toBeNull();
-      expect(foodPhotoProviderLabel(undefined)).toBeNull();
-      expect(foodPhotoProviderLabel('')).toBeNull();
+    test('PRIVATE_NETWORK_FORBIDDEN invalidates AI settings', () => {
+      const copy = mapEstimateError('PRIVATE_NETWORK_FORBIDDEN');
+      expect(copy.stayOnForm).toBe(false);
+      expect(copy.invalidateAiSettings).toBe(true);
+      expect(copy.title.toLowerCase()).toContain('not allowed');
     });
   });
 });

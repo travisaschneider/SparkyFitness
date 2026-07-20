@@ -1,18 +1,20 @@
-import React, { useState, useCallback, useMemo, useEffect } from 'react';
-import { View, Text, Switch, ScrollView } from 'react-native';
+import React, { useState, useCallback, useMemo } from 'react';
+import { View, Text, Switch, ScrollView, Platform } from 'react-native';
 import Animated, { LinearTransition } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useCSSVariable } from 'uniwind';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import Toast from 'react-native-toast-message';
 
-import Button from '../components/ui/Button';
 import Icon from '../components/Icon';
 import BottomSheetPicker from '../components/BottomSheetPicker';
 import FormInput from '../components/FormInput';
 import { useActiveWorkoutBarPadding } from '../components/ActiveWorkoutBar';
+import HealthSourceLabel, { healthSourceName } from '../components/HealthSourceLabel';
 import { usePreferences } from '../hooks/usePreferences';
 import { updatePreferences } from '../services/api/preferencesApi';
+import { useNativeIOSHeadersActive } from '../services/nativeTabBarPreference';
+import { useScreenHeader } from '../hooks/useScreenHeader';
 import { preferencesQueryKey } from '../hooks/queryKeys';
 import type { UserPreferences } from '../types/preferences';
 import type { RootStackScreenProps } from '../types/navigation';
@@ -20,7 +22,7 @@ import type { RootStackScreenProps } from '../types/navigation';
 type CalorieSettingsScreenProps = RootStackScreenProps<'CalorieSettings'>;
 
 const modeOptions = [
-  { label: 'Adaptive TDEE', value: 'adaptive' },
+  { label: 'Adaptive Goal', value: 'adaptive' },
   { label: 'Dynamic Goal', value: 'dynamic' },
   { label: 'Fixed Goal', value: 'fixed' },
   { label: 'Percentage Earn-Back', value: 'percentage' },
@@ -28,11 +30,15 @@ const modeOptions = [
 ];
 
 const activityLevelOptions = [
+  { label: 'None (x1.0)', value: 'none' },
   { label: 'Sedentary (x1.2)', value: 'not_much' },
   { label: 'Lightly Active (x1.375)', value: 'light' },
   { label: 'Moderately Active (x1.55)', value: 'moderate' },
   { label: 'Very Active (x1.725)', value: 'heavy' },
 ];
+
+// Apple Health and Health Connect use different terms for the same baseline-energy value.
+const bmrMetricName = Platform.OS === 'ios' ? 'Resting Energy' : 'BMR';
 
 function normalizePreferences(prefs: UserPreferences | undefined) {
   const raw = prefs?.calorie_goal_adjustment_mode;
@@ -42,12 +48,14 @@ function normalizePreferences(prefs: UserPreferences | undefined) {
     exerciseCaloriePercentage: prefs?.exercise_calorie_percentage ?? 100,
     includeBmrInNetCalories: prefs?.include_bmr_in_net_calories ?? false,
     tdeeAllowNegativeAdjustment: prefs?.tdee_allow_negative_adjustment ?? false,
+    useExternalBmr: prefs?.use_external_bmr ?? false,
   };
 }
 
-const CalorieSettingsScreen: React.FC<CalorieSettingsScreenProps> = ({ navigation }) => {
+const CalorieSettingsScreen: React.FC<CalorieSettingsScreenProps> = () => {
   const insets = useSafeAreaInsets();
   const activeWorkoutBarPadding = useActiveWorkoutBarPadding('stack');
+  const usesNativeHeader = useNativeIOSHeadersActive();
   const [accentPrimary, formEnabled, formDisabled] = useCSSVariable([
     '--color-accent-primary',
     '--color-form-enabled',
@@ -62,9 +70,16 @@ const CalorieSettingsScreen: React.FC<CalorieSettingsScreenProps> = ({ navigatio
     () => String(normalized.exerciseCaloriePercentage),
   );
 
-  useEffect(() => {
+  // Re-sync the input text when the saved percentage changes (e.g. a background
+  // refetch). Done during render (instead of in an effect) so the field shows
+  // the latest saved value on the first render after it changes.
+  const [syncedPercentage, setSyncedPercentage] = useState(
+    normalized.exerciseCaloriePercentage,
+  );
+  if (syncedPercentage !== normalized.exerciseCaloriePercentage) {
+    setSyncedPercentage(normalized.exerciseCaloriePercentage);
     setPercentageText(String(normalized.exerciseCaloriePercentage));
-  }, [normalized.exerciseCaloriePercentage]);
+  }
 
   const mutation = useMutation({
     mutationFn: (data: Partial<UserPreferences>) => updatePreferences(data),
@@ -104,6 +119,10 @@ const CalorieSettingsScreen: React.FC<CalorieSettingsScreenProps> = ({ navigatio
 
   const handleNegativeAdjustmentToggle = useCallback((value: boolean) => {
     mutation.mutate({ tdee_allow_negative_adjustment: value });
+  }, [mutation]);
+
+  const handleExternalBmrToggle = useCallback((value: boolean) => {
+    mutation.mutate({ use_external_bmr: value });
   }, [mutation]);
 
   const handlePercentageBlur = useCallback(() => {
@@ -164,25 +183,15 @@ const CalorieSettingsScreen: React.FC<CalorieSettingsScreenProps> = ({ navigatio
     return { burned, net, remainingFormula, remainingNote };
   }, [normalized.mode, normalized.includeBmrInNetCalories, normalized.exerciseCaloriePercentage]);
 
+  const header = useScreenHeader({ title: 'Calorie & BMR Settings', left: { kind: 'back' } });
+
   return (
-    <View className="flex-1 bg-background" style={{ paddingTop: insets.top }}>
+    <View className="flex-1 bg-background" style={usesNativeHeader ? undefined : { paddingTop: insets.top }}>
+      {header}
       <ScrollView
         contentContainerStyle={{ padding: 16, paddingTop: 16, paddingBottom: insets.bottom + 80 + activeWorkoutBarPadding }}
-        contentInsetAdjustmentBehavior="never"
+        contentInsetAdjustmentBehavior={usesNativeHeader ? 'automatic' : 'never'}
       >
-        {/* Header */}
-        <View className="flex-row items-center mb-4">
-          <Button
-            variant="ghost"
-            onPress={() => navigation.goBack()}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-            className="py-0 px-0 mr-2"
-          >
-            <Icon name="chevron-back" size={22} color={accentPrimary} />
-          </Button>
-          <Text className="text-2xl font-bold text-text-primary">Calorie Settings</Text>
-        </View>
-
         {/* Mode */}
         <View className="bg-surface rounded-xl p-3 mb-4 shadow-sm">
           <View className="flex-row items-center justify-between">
@@ -338,6 +347,36 @@ const CalorieSettingsScreen: React.FC<CalorieSettingsScreenProps> = ({ navigatio
             )}
           </Animated.View>
         </Animated.View>
+
+        {/* External BMR — use connected health app's resting energy / BMR */}
+        <View className="bg-surface rounded-xl p-4 mb-4 shadow-sm">
+          <View className="flex-row justify-between items-center">
+            <Text className="text-base font-semibold text-text-primary flex-1 mr-3">
+              Use {bmrMetricName} from {healthSourceName}
+            </Text>
+            <Switch
+              onValueChange={handleExternalBmrToggle}
+              value={normalized.useExternalBmr}
+              trackColor={{ false: formDisabled, true: formEnabled }}
+              thumbColor="#FFFFFF"
+            />
+          </View>
+          <Text className="text-text-secondary text-sm mt-3">
+            Uses {healthSourceName} {bmrMetricName} when available. Otherwise, the selected
+            formula will be used.
+          </Text>
+          {normalized.useExternalBmr && (
+            <View className="mt-3">
+              <HealthSourceLabel />
+              {Platform.OS === 'ios' && (
+                <Text className="text-text-secondary text-xs mt-3">
+                  The synced value already includes light daily activity, so you may want to set
+                  your Activity Level to None (×1.0) to avoid counting it twice.
+                </Text>
+              )}
+            </View>
+          )}
+        </View>
       </ScrollView>
     </View>
   );

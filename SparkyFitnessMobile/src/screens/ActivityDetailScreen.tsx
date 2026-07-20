@@ -1,5 +1,5 @@
 import React, { useCallback, useRef, useState } from 'react';
-import { View, Text, ActivityIndicator, TouchableOpacity } from 'react-native';
+import { View, Text, TouchableOpacity } from 'react-native';
 import FadeView from '../components/FadeView';
 import EditableSetList from '../components/EditableSetList';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
@@ -11,6 +11,8 @@ import FormInput from '../components/FormInput';
 import Button from '../components/ui/Button';
 import SafeImage from '../components/SafeImage';
 import { useActiveWorkoutBarPadding } from '../components/ActiveWorkoutBar';
+import { useNativeIOSHeadersActive } from '../services/nativeTabBarPreference';
+import { useScreenHeader, SAVE_LABEL, SAVING_LABEL } from '../hooks/useScreenHeader';
 import { getSourceLabel, getWorkoutSummary } from '../utils/workoutSession';
 import {
   useDeleteExerciseEntry,
@@ -49,6 +51,7 @@ const ActivityDetailScreen: React.FC<Props> = ({ navigation, route }) => {
     '--color-accent-primary',
     '--color-border-subtle',
   ]) as [string, string];
+  const usesNativeHeader = useNativeIOSHeadersActive();
 
   const { getImageSource } = useExerciseImageSource();
 
@@ -132,6 +135,11 @@ const ActivityDetailScreen: React.FC<Props> = ({ navigation, route }) => {
   };
 
   // --- Set editing callbacks ---
+  // The React Compiler can't preserve this manual memoization because the
+  // callback mutates nextSetIdRef to generate unique client ids. The useCallback
+  // is still honored at runtime; the compiler just skips optimizing this
+  // component. Suppress the bailout rather than rewrite the working id counter.
+  // eslint-disable-next-line react-hooks/preserve-manual-memoization
   const addDraftSet = useCallback((_exerciseId?: string) => {
     const id = `set-${nextSetIdRef.current++}`;
     setDraftSets(prev => {
@@ -256,21 +264,23 @@ const ActivityDetailScreen: React.FC<Props> = ({ navigation, route }) => {
     if (isEditing || duration > 0) {
       stats.push({
         value: isEditing
-          ? (formState.duration || '—')
-          : (duration > 0 ? String(Math.round(duration)) : '—'),
+          ? (formState.duration || '-')
+          : (duration > 0
+              ? String(Number(duration.toFixed(2)))
+              : '-'),
         label: 'Duration',
         editKey: 'duration',
         editSuffix: 'min',
-        keyboardType: 'numeric',
+        keyboardType: 'decimal-pad',
       });
     }
     if (isEditing || calories > 0) {
       stats.push({
         value: isEditing
-          ? (formState.calories || '—')
+          ? (formState.calories || '-')
           : (calories > 0
               ? (calories % 1 === 0 ? String(calories) : calories.toFixed(1))
-              : '—'),
+              : '-'),
         label: 'Calories',
         editKey: 'calories',
         editSuffix: 'cal',
@@ -280,10 +290,10 @@ const ActivityDetailScreen: React.FC<Props> = ({ navigation, route }) => {
     if (isEditing || (session.distance != null && session.distance > 0)) {
       stats.push({
         value: isEditing
-          ? (formState.distance || '—')
+          ? (formState.distance || '-')
           : (session.distance != null && session.distance > 0
               ? String(distanceFromKm(session.distance, distanceUnit).toFixed(1))
-              : '—'),
+              : '-'),
         label: 'Distance',
         editKey: 'distance',
         editSuffix: distLabel,
@@ -293,8 +303,8 @@ const ActivityDetailScreen: React.FC<Props> = ({ navigation, route }) => {
     if (isEditing || session.avg_heart_rate != null) {
       stats.push({
         value: isEditing
-          ? (formState.avgHeartRate || '—')
-          : (session.avg_heart_rate != null ? String(session.avg_heart_rate) : '—'),
+          ? (formState.avgHeartRate || '-')
+          : (session.avg_heart_rate != null ? String(session.avg_heart_rate) : '-'),
         label: 'Avg Heart Rate',
         editKey: 'avgHeartRate',
         editSuffix: 'bpm',
@@ -433,66 +443,48 @@ const ActivityDetailScreen: React.FC<Props> = ({ navigation, route }) => {
     );
   };
 
+  // View mode: name title + owner-only Edit. Edit mode: "Edit Activity" title,
+  // X-dismiss owning the left slot with swipe-back disabled, Save on the right.
+  const header = useScreenHeader({
+    nativeTitle: isEditing ? 'Edit Activity' : name,
+    animateKey: isEditing ? 'edit' : 'view',
+    borderless: true,
+    nativeOptions: { gestureEnabled: !isEditing, headerBackVisible: !isEditing },
+    left: isEditing
+      ? {
+          kind: 'dismiss',
+          onPress: cancelEditing,
+          disabled: isSaving,
+          accessibilityLabel: 'Cancel',
+          identifier: 'activity-detail-cancel',
+        }
+      : { kind: 'back' },
+    right: isEditing
+      ? {
+          kind: 'primary',
+          label: SAVE_LABEL,
+          busyLabel: SAVING_LABEL,
+          busy: isSaving,
+          disabled: isSaving,
+          onPress: handleSave,
+          accessibilityLabel: 'Save',
+          identifier: 'activity-detail-save',
+        }
+      : isSparky
+        ? {
+            kind: 'text',
+            label: 'Edit',
+            role: 'secondary',
+            onPress: startEditing,
+            accessibilityLabel: 'Edit activity',
+            identifier: 'activity-detail-edit',
+          }
+        : null,
+  });
+
   return (
-    <View className="flex-1 bg-background" style={{ paddingTop: insets.top }}>
-      {/* Header */}
-      <View className="flex-row items-center px-4 py-3 ">
-        {isEditing ? (
-          <FadeView
-            key="header-edit"
-            style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}
-          >
-            <Button
-              variant="ghost"
-              onPress={cancelEditing}
-              disabled={isSaving}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              className="py-0 px-0"
-            >
-              <Text className="text-accent-primary text-base font-medium">Cancel</Text>
-            </Button>
-            <View className="flex-1" />
-            <Button
-              variant="ghost"
-              onPress={handleSave}
-              disabled={isSaving}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              className="py-0 px-0"
-            >
-              {isSaving ? (
-                <ActivityIndicator size="small" color={accentPrimary} />
-              ) : (
-                <Text className="text-accent-primary text-base font-semibold">Save</Text>
-              )}
-            </Button>
-          </FadeView>
-        ) : (
-          <FadeView
-            key="header-view"
-            style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}
-          >
-            <Button
-              variant="ghost"
-              onPress={() => navigation.goBack()}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              className="py-0 px-0"
-            >
-              <Icon name="chevron-back" size={22} color={accentPrimary} />
-            </Button>
-            <View className="flex-1" />
-            {isSparky && (
-              <Button
-                variant="ghost"
-                onPress={startEditing}
-                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                className="py-0 px-0"
-              >
-                <Text className="text-accent-primary text-base font-medium">Edit</Text>
-              </Button>
-            )}
-          </FadeView>
-        )}
-      </View>
+    <View className="flex-1 bg-background" style={usesNativeHeader ? undefined : { paddingTop: insets.top }}>
+      {header}
 
       <KeyboardAwareScrollView
         contentContainerClassName="px-4"
@@ -589,8 +581,8 @@ const ActivityDetailScreen: React.FC<Props> = ({ navigation, route }) => {
               {session.sets.map(set => {
                 const displayWeight = set.weight != null
                   ? `${parseFloat(weightFromKg(set.weight, weightUnit).toFixed(1))} ${weightUnit}`
-                  : '\u2014';
-                const displayReps = set.reps != null ? String(set.reps) : '\u2014';
+                  : '-';
+                const displayReps = set.reps != null ? String(set.reps) : '-';
                 return (
                   <View key={set.id} className="flex-row py-1.5">
                     <Text className="text-sm text-text-muted w-10 text-center">{set.set_number}</Text>

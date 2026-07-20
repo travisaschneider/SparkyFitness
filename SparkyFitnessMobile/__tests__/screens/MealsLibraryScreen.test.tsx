@@ -1,4 +1,5 @@
 import React from 'react';
+import { Platform } from 'react-native';
 import { render, fireEvent } from '@testing-library/react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import MealsLibraryScreen from '../../src/screens/MealsLibraryScreen';
@@ -17,6 +18,16 @@ jest.mock('../../src/components/ActiveWorkoutBar', () => ({
 const mockUseMeals = useMeals as jest.MockedFunction<typeof useMeals>;
 const mockUseMealSearch = useMealSearch as jest.MockedFunction<typeof useMealSearch>;
 const mockUseServerConnection = useServerConnection as jest.MockedFunction<typeof useServerConnection>;
+
+const mockNavigation = {
+  navigate: jest.fn(),
+  goBack: jest.fn(),
+  setOptions: jest.fn(),
+} as any;
+jest.mock('@react-navigation/native', () => ({
+  ...jest.requireActual('@react-navigation/native'),
+  useNavigation: () => mockNavigation,
+}));
 
 const insets = { top: 0, bottom: 0, left: 0, right: 0 };
 const frame = { x: 0, y: 0, width: 390, height: 844 };
@@ -53,10 +64,7 @@ function createMeal(id: string, name: string, calories: number) {
 }
 
 describe('MealsLibraryScreen', () => {
-  const navigation = {
-    navigate: jest.fn(),
-    goBack: jest.fn(),
-  } as any;
+  const navigation = mockNavigation;
 
   const route = {
     key: 'MealsLibrary-key',
@@ -108,7 +116,13 @@ describe('MealsLibraryScreen', () => {
 
     const screen = renderScreen();
 
-    expect(screen.getByText('Meals')).toBeTruthy();
+    if (Platform.OS === 'ios') {
+      // On iOS the "Meals" title is provided by the native stack header
+      // (configured in App.tsx via createStackScreenOptions), not inline.
+      expect(screen.queryByText('Meals')).toBeNull();
+    } else {
+      expect(screen.getByText('Meals')).toBeTruthy();
+    }
     expect(screen.getByText('Overnight Oats')).toBeTruthy();
     expect(screen.getByText('Protein Shake')).toBeTruthy();
 

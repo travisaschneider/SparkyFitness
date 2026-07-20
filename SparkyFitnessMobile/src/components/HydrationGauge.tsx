@@ -62,48 +62,46 @@ const HydrationGauge: React.FC<HydrationGaugeProps> = ({
   }, [progress, animatedProgress]);
 
   const bottlePath = useMemo(() => {
-    const p = Skia.Path.Make();
+    const b = Skia.PathBuilder.Make();
 
     // Neck
-    p.moveTo(26, 6);
-    p.lineTo(26, 23);
+    b.moveTo(26, 6);
+    b.lineTo(26, 23);
 
     // Lip (cap ridge)
-    p.lineTo(23, 23);
-    p.lineTo(23, 28);
+    b.lineTo(23, 23);
+    b.lineTo(23, 28);
 
     // Left shoulder curve
-    p.cubicTo(23, 34, 12, 37, 12, 42);
+    b.cubicTo(23, 34, 12, 37, 12, 42);
 
     // Left body
-    p.lineTo(12, 112);
+    b.lineTo(12, 112);
 
     // Bottom curves
-    p.cubicTo(12, 121, 20, 124, 35, 124);
-    p.cubicTo(50, 124, 58, 121, 58, 112);
+    b.cubicTo(12, 121, 20, 124, 35, 124);
+    b.cubicTo(50, 124, 58, 121, 58, 112);
 
     // Right body
-    p.lineTo(58, 42);
+    b.lineTo(58, 42);
 
     // Right shoulder curve
-    p.cubicTo(58, 37, 47, 34, 47, 28);
+    b.cubicTo(58, 37, 47, 34, 47, 28);
 
     // Lip right
-    p.lineTo(47, 23);
-    p.lineTo(44, 23);
+    b.lineTo(47, 23);
+    b.lineTo(44, 23);
 
     // Right neck
-    p.lineTo(44, 6);
+    b.lineTo(44, 6);
 
-    p.close();
-    return p;
+    b.close();
+    return b.build();
   }, []);
 
   const fillPath = useDerivedValue(() => {
-    const p = Skia.Path.Make();
     const y = FILL_BOTTOM - FILL_HEIGHT * animatedProgress.value;
-    p.addRect(Skia.XYWHRect(0, y, CANVAS_WIDTH, CANVAS_HEIGHT - y));
-    return p;
+    return Skia.Path.Rect(Skia.XYWHRect(0, y, CANVAS_WIDTH, CANVAS_HEIGHT - y));
   });
 
   const convertedConsumed = convertFromMl(consumed, unit);
@@ -118,7 +116,8 @@ const HydrationGauge: React.FC<HydrationGaugeProps> = ({
   const showChips = (containers?.length ?? 0) > 1;
 
   return (
-    <View className="bg-surface rounded-xl p-4 my-2 shadow-sm">
+    <View className="bg-surface rounded-xl p-4 mb-3 shadow-sm">
+      <Text className="text-md font-bold text-text-secondary mb-3">Hydration</Text>
       <View className="flex-row items-center">
         <View className="flex-row items-center mr-4">
           {showButtons && (

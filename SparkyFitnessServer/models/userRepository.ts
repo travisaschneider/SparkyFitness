@@ -98,7 +98,13 @@ async function getAccessibleUsers(userId: string) {
        JOIN "user" u ON u.id = fa.owner_user_id
        WHERE fa.family_user_id = $1
          AND fa.is_active = TRUE
-         AND (fa.access_end_date IS NULL OR fa.access_end_date > NOW())`,
+         AND (fa.access_end_date IS NULL OR fa.access_end_date > NOW())
+         AND (
+           (fa.access_permissions->>'can_manage_diary')::boolean = TRUE OR
+           (fa.access_permissions->>'can_manage_checkin')::boolean = TRUE OR
+           (fa.access_permissions->>'can_view_reports')::boolean = TRUE OR
+           (fa.access_permissions->>'can_manage_medications')::boolean = TRUE
+         )`,
       [userId]
     );
     return result.rows;
@@ -110,7 +116,10 @@ async function getUserProfile(userId: string) {
   const client = await getClient(userId); // User-specific operation
   try {
     const result = await client.query(
-      "SELECT id, full_name, phone_number, TO_CHAR(date_of_birth, 'YYYY-MM-DD') AS date_of_birth, bio, avatar_url, gender FROM profiles WHERE id = $1",
+      `SELECT p.id, p.full_name, p.phone_number, TO_CHAR(p.date_of_birth, 'YYYY-MM-DD') AS date_of_birth, p.bio, p.avatar_url, p.gender, o.target_weight
+       FROM profiles p
+       LEFT JOIN onboarding_data o ON p.id = o.user_id
+       WHERE p.id = $1`,
       [userId]
     );
     return result.rows[0];
@@ -147,6 +156,46 @@ async function updateUserProfile(
     client.release();
   }
 }
+// Account fields on the Better Auth "user" table; backs the chatbot profile
+// tools (ai/tools/profileTools.ts).
+async function getAuthUserProfile(userId: string) {
+  const client = await getClient(userId); // User-specific operation
+  try {
+    const result = await client.query(
+      'SELECT id, email, name, image FROM "user" WHERE id = $1',
+      [userId]
+    );
+    return result.rows[0];
+  } finally {
+    client.release();
+  }
+}
+// Partial COALESCE update of the Better Auth "user" row. Note: unlike
+// updateUserEmail, an email change here does not update account.account_id
+// for credential logins.
+async function updateAuthUserProfile(
+  userId: string,
+  name: string | null,
+  email: string | null,
+  image: string | null
+) {
+  const client = await getClient(userId); // User-specific operation
+  try {
+    const result = await client.query(
+      `UPDATE "user"
+       SET name = COALESCE($2, name),
+           email = COALESCE($3, email),
+           image = COALESCE($4, image),
+           updated_at = now()
+       WHERE id = $1
+       RETURNING id, email, name, image`,
+      [userId, name, email, image]
+    );
+    return result.rows[0];
+  } finally {
+    client.release();
+  }
+}
 async function updateUserPassword(userId: string, hashedPassword: string) {
   const client = await getClient(userId); // User-specific operation
   try {
@@ -159,12 +208,27 @@ async function updateUserPassword(userId: string, hashedPassword: string) {
     client.release();
   }
 }
+async function getCredentialPasswordHash(
+  userId: string
+): Promise<string | null> {
+  const client = await getClient(userId); // User-specific operation
+  try {
+    const result = await client.query(
+      'SELECT password FROM "account" WHERE user_id = $1 AND provider_id = \'credential\'',
+      [userId]
+    );
+    return result.rows[0]?.password ?? null;
+  } finally {
+    client.release();
+  }
+}
 async function updateUserEmail(userId: string, newEmail: string) {
   const client = await getClient(userId); // User-specific operation
   try {
     await client.query('BEGIN');
+    // A changed email is unproven until re-verified.
     await client.query(
-      'UPDATE "user" SET email = $1, updated_at = now() WHERE id = $2',
+      'UPDATE "user" SET email = $1, email_verified = false, updated_at = now() WHERE id = $2',
       [newEmail, userId]
     );
     await client.query(
@@ -515,7 +579,10 @@ export { findUserIdByEmail };
 export { getAccessibleUsers };
 export { getUserProfile };
 export { updateUserProfile };
+export { getAuthUserProfile };
+export { updateAuthUserProfile };
 export { updateUserPassword };
+export { getCredentialPasswordHash };
 export { updateUserEmail };
 export { getUserRole };
 export { updateUserRole };
@@ -543,7 +610,10 @@ export default {
   getAccessibleUsers,
   getUserProfile,
   updateUserProfile,
+  getAuthUserProfile,
+  updateAuthUserProfile,
   updateUserPassword,
+  getCredentialPasswordHash,
   updateUserEmail,
   getUserRole,
   updateUserRole,

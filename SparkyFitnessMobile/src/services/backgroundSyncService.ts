@@ -2,24 +2,17 @@ import * as TaskManager from 'expo-task-manager';
 import * as BackgroundTask from 'expo-background-task';
 import { AppState } from 'react-native';
 import { syncHealthData, HealthDataPayload } from './api/healthDataApi';
+import { runWriteback } from './writeback';
 import { addLog, _flushBuffer } from './LogService';
 import { HEALTH_METRICS } from '../HealthMetrics';
 import {
   loadHealthPreference,
-  readHealthRecordsDetailed,
-  transformHealthRecords,
-  aggregateSleepSessions,
-  aggregateByDay,
-  getAggregatedStepsByDateDetailed,
-  getAggregatedActiveCaloriesByDateDetailed,
-  getAggregatedTotalCaloriesByDateDetailed,
-  getAggregatedDistanceByDateDetailed,
-  getAggregatedFloorsClimbedByDateDetailed,
-  alignToLocalDayStart,
+  healthReadProvider,
   resetDatabaseInaccessibleCount,
   getDatabaseInaccessibleCount,
 } from './healthConnectService';
-import type { TransformedRecord } from '../types/healthRecords';
+import { collectHealthData } from './shared/healthSyncEngine';
+import { buildBackgroundWindows } from '../utils/syncUtils';
 import {
   loadLastSyncedTime,
   saveLastSyncedTime,
@@ -27,92 +20,12 @@ import {
   savePendingHealthSyncCacheRefresh,
   consumePendingHealthSyncCacheRefresh,
 } from './storage';
-import { runTasksInBatches, withTimeout, TimeoutError } from '../utils/concurrency';
 import { queryClient } from '../hooks/queryClient';
 import { refreshHealthSyncCache } from '../hooks/refreshHealthSyncCache';
 
 const isAppActive = (): boolean => AppState.currentState === 'active';
 
-const METRIC_FETCH_CONCURRENCY = 3;
-const METRIC_TIMEOUT_MS = 60_000; // 60s per metric query
-
 const BACKGROUND_TASK_NAME = 'healthDataSync';
-
-// Health records (sleep, workouts, etc.) can arrive in HealthKit/Health Connect hours
-// after the event. We overlap session queries by this amount so late-arriving records
-// whose event timestamps fall before lastSyncedTime are still picked up. The server
-// upserts by record identity, so duplicates are harmless.
-const SESSION_OVERLAP_MS = 6 * 60 * 60 * 1000; // 6 hours
-
-interface BackgroundMetricResult {
-  data: HealthDataPayload;
-  error?: string;
-}
-
-/**
- * Fetches and transforms a single health metric for background sync.
- * Cumulative metrics use the aggregation API; others read raw records.
- */
-async function processBackgroundMetric(
-  metric: (typeof HEALTH_METRICS)[number],
-  aggregatedStartDate: Date,
-  sessionStartDate: Date,
-  endDate: Date,
-): Promise<BackgroundMetricResult> {
-  const type = metric.recordType;
-  let dataToTransform: unknown[] = [];
-  let readError: string | undefined;
-
-  // Cumulative metrics use the aggregation API (handles deduplication)
-  if (type === 'Steps') {
-    const result = await getAggregatedStepsByDateDetailed(aggregatedStartDate, endDate);
-    dataToTransform = result.records;
-    readError = result.error;
-  } else if (type === 'ActiveCaloriesBurned') {
-    const result = await getAggregatedActiveCaloriesByDateDetailed(aggregatedStartDate, endDate);
-    dataToTransform = result.records;
-    readError = result.error;
-  } else if (type === 'TotalCaloriesBurned') {
-    const result = await getAggregatedTotalCaloriesByDateDetailed(aggregatedStartDate, endDate);
-    dataToTransform = result.records;
-    readError = result.error;
-  } else if (type === 'Distance') {
-    const result = await getAggregatedDistanceByDateDetailed(aggregatedStartDate, endDate);
-    dataToTransform = result.records;
-    readError = result.error;
-  } else if (type === 'FloorsClimbed') {
-    const result = await getAggregatedFloorsClimbedByDateDetailed(aggregatedStartDate, endDate);
-    dataToTransform = result.records;
-    readError = result.error;
-  } else {
-    // All other metrics: read raw records
-    const result = await readHealthRecordsDetailed(type, sessionStartDate, endDate);
-    const rawRecords = result.records;
-    readError = result.error;
-    if (!rawRecords || rawRecords.length === 0) return { data: [], error: readError };
-    dataToTransform = rawRecords;
-
-    // Post-read aggregation for specific types
-    if (type === 'SleepSession') {
-      dataToTransform = aggregateSleepSessions(rawRecords);
-    }
-  }
-
-  const transformed = transformHealthRecords(dataToTransform, metric);
-  if (transformed.length === 0) return { data: [], error: readError };
-
-  if (metric.aggregationStrategy) {
-    const aggregated = aggregateByDay(
-      transformed as TransformedRecord[],
-      metric.type,
-      metric.unit,
-      metric.aggregationStrategy,
-    );
-    return { data: aggregated as HealthDataPayload, error: readError };
-  }
-
-  return { data: transformed as HealthDataPayload, error: readError };
-}
 
 // Guard against overlapping syncs from concurrent triggers (background task,
 // manual trigger, HealthKit observer). Second caller awaits the in-flight run.
@@ -160,26 +73,19 @@ const performBackgroundSyncInternal = async (taskId: string): Promise<void> => {
   console.log('[BackgroundSync] taskId', taskId);
   addLog(`[Background Sync] Starting background sync task: ${taskId}`, 'INFO');
 
-  const now = new Date();
   const lastSyncedTimeStr = await loadLastSyncedTime();
-  const lastSyncedDate = lastSyncedTimeStr ? new Date(lastSyncedTimeStr) : new Date(now.getTime() - 24 * 60 * 60 * 1000);
   addLog(`[Background Sync] Last synced: ${lastSyncedTimeStr ?? 'never (defaulting to 24h ago)'}`, 'INFO');
-  const endDate = now;
 
-  // Session metrics use an overlap window to catch late-arriving records whose
-  // event timestamps predate lastSyncedTime (e.g. overnight sleep synced next morning).
-  const sessionStartDate = new Date(lastSyncedDate.getTime() - SESSION_OVERLAP_MS);
+  // Session reads use the cursor minus a 6h overlap so late-arriving records are
+  // still picked up; day-aggregated reads align to start-of-day so complete daily
+  // values are sent, never partial-window slices (see buildBackgroundWindows).
+  const windows = buildBackgroundWindows(lastSyncedTimeStr);
 
-  // Aggregated metrics (steps, calories) produce per-day totals. Use start-of-day
-  // so we always send complete daily values rather than partial-window slices.
-  const aggregatedStartDate = alignToLocalDayStart(sessionStartDate);
-
-  addLog(`[Background Sync] Syncing sessions from ${sessionStartDate.toISOString()}, aggregated from ${aggregatedStartDate.toISOString()} to ${endDate.toISOString()}`, 'INFO');
+  addLog(`[Background Sync] Syncing sessions from ${windows.sessionStart.toISOString()}, aggregated from ${windows.aggregatedStart.toISOString()} to ${windows.end.toISOString()}`, 'INFO');
 
   const allData: HealthDataPayload = [];
   const collectedCounts: string[] = [];
   let syncErrors = 0;
-  let enabledMetricCount = 0;
 
   resetDatabaseInaccessibleCount();
 
@@ -191,7 +97,7 @@ const performBackgroundSyncInternal = async (taskId: string): Promise<void> => {
       enabledMetrics.push(metric);
     }
   }
-  enabledMetricCount = enabledMetrics.length;
+  const enabledMetricCount = enabledMetrics.length;
   addLog(`[Background Sync] Found ${enabledMetricCount} enabled metrics`, 'INFO');
 
   if (enabledMetricCount === 0) {
@@ -199,45 +105,34 @@ const performBackgroundSyncInternal = async (taskId: string): Promise<void> => {
     return;
   }
 
-  const results = await runTasksInBatches(
-    enabledMetrics,
-    METRIC_FETCH_CONCURRENCY,
-    metric => withTimeout(
-      processBackgroundMetric(metric, aggregatedStartDate, sessionStartDate, endDate),
-      METRIC_TIMEOUT_MS,
-      `Background query for ${metric.recordType}`,
-    ),
-    {
-      stopOnError: error => error instanceof TimeoutError,
-    },
-  );
+  const outcomes = await collectHealthData(healthReadProvider, enabledMetrics, windows, {
+    timeoutLabelPrefix: 'Background query',
+  });
 
-  for (let i = 0; i < results.length; i++) {
-    const result = results[i];
-    const metric = enabledMetrics[i];
+  for (const outcome of outcomes) {
+    const metric = outcome.metric;
 
-    if (result.status === 'skipped') {
+    if (outcome.status === 'skipped') {
       syncErrors++;
       addLog(
         `[Background Sync] Skipping ${metric.label} because an earlier metric timed out; will retry next cycle`,
         'WARNING',
       );
-    } else if (result.status === 'fulfilled') {
-      if (result.value.data.length > 0) {
-        allData.push(...result.value.data);
-        collectedCounts.push(`${metric.id}: ${result.value.data.length}`);
+    } else if (outcome.status === 'fulfilled') {
+      if (outcome.data.length > 0) {
+        allData.push(...outcome.data);
+        collectedCounts.push(`${metric.id}: ${outcome.data.length}`);
       }
-      if (result.value.error) {
+      if (outcome.error) {
         syncErrors++;
         addLog(
-          `[Background Sync] ${metric.label} completed with read errors: ${result.value.error}`,
+          `[Background Sync] ${metric.label} completed with read errors: ${outcome.error}`,
           'WARNING',
         );
       }
     } else {
       syncErrors++;
-      const message = result.reason instanceof Error ? result.reason.message : String(result.reason);
-      addLog(`[Background Sync] Error syncing ${metric.label}: ${message}`, 'ERROR');
+      addLog(`[Background Sync] Error syncing ${metric.label}: ${outcome.error}`, 'ERROR');
     }
   }
 
@@ -278,6 +173,17 @@ const performBackgroundSyncInternal = async (taskId: string): Promise<void> => {
     await addLog(`[Background Sync] Sync completed successfully${syncErrors > 0 ? ` (${syncErrors} metric(s) had errors)` : ''}`, 'INFO');
   } else {
     await addLog(`[Background Sync] No health data collected to sync${syncErrors > 0 ? ` (${syncErrors} metric(s) had errors)` : ''}`, 'INFO');
+  }
+
+  // Outbound phase: SparkyFitness diary → OS health store (Health Connect on
+  // Android, HealthKit on iOS; resolved via ./writeback). Runs regardless of
+  // inbound results and in its own try/catch so a writeback failure never affects
+  // the inbound sync or its cursor above.
+  try {
+    await runWriteback();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await addLog(`[Background Sync] Writeback phase failed: ${message}`, 'ERROR');
   }
 };
 

@@ -3,6 +3,7 @@ import {
   getLanguageDisplayName,
 } from '@/utils/languageUtils'; // Import language utilities
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
   Select,
@@ -51,6 +52,8 @@ export const PreferenceSettings = () => {
     loggingLevel,
     firstDayOfWeek,
     setFirstDayOfWeek,
+    measurementDecimalPlaces,
+    setMeasurementDecimalPlaces,
     timezone,
     setTimezone,
     saveAllPreferences,
@@ -78,6 +81,7 @@ export const PreferenceSettings = () => {
         autoScaleOnlineImports,
         language,
         firstDayOfWeek,
+        measurementDecimalPlaces,
         timezone,
         loggingLevel: localLoggingLevel,
       });
@@ -229,6 +233,25 @@ export const PreferenceSettings = () => {
                 </SelectItem>
               </SelectContent>
             </Select>
+          </div>
+          <div>
+            <Label htmlFor="measurement_decimal_places">
+              {t(
+                'settings.preferences.measurementDecimalPlaces',
+                'Measurement Decimal Places'
+              )}
+            </Label>
+            <Input
+              id="measurement_decimal_places"
+              type="number"
+              min={0}
+              value={measurementDecimalPlaces}
+              onChange={(e) =>
+                setMeasurementDecimalPlaces(
+                  Math.max(0, parseInt(e.target.value, 10) || 0)
+                )
+              }
+            />
           </div>
           <div>
             <Label htmlFor="first_day_of_week">
@@ -411,18 +434,18 @@ export const PreferenceSettings = () => {
               onCheckedChange={setAutoScaleOpenFoodFactsImports}
             />
           </div>
-          <div className="flex items-center justify-between col-span-2 py-2">
+          <div className="flex items-center justify-between col-span-full py-2">
             <div className="space-y-0.5">
               <Label htmlFor="auto-scale-online-imports">
                 {t(
                   'settings.preferences.autoScaleOnlineImports',
-                  'Auto-scale Online Database Imports'
+                  'Auto-Scale foods by default'
                 )}
               </Label>
               <p className="text-sm text-muted-foreground">
                 {t(
                   'settings.preferences.autoScaleOnlineImportsHint',
-                  'When enabled, the Auto-Scale checkbox will be on by default when editing foods imported from any online database, so nutrition values scale automatically when you change the serving size.'
+                  'When enabled, the Auto-Scale checkbox is checked whenever you edit a food, meaning its nutrition values scale automatically as you change the serving size.'
                 )}
               </p>
             </div>

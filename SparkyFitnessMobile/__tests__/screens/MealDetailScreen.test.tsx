@@ -11,6 +11,7 @@ jest.mock('../../src/hooks', () => ({
   useProfile: jest.fn(),
   useServerConnection: jest.fn(),
   usePreferences: jest.fn(() => ({ preferences: undefined, isLoading: false, isError: false, refetch: jest.fn() })),
+  useCustomNutrients: jest.fn(() => ({ customNutrients: [], isLoading: false, isError: false, refetch: jest.fn() })),
 }));
 
 jest.mock('../../src/components/ActiveWorkoutBar', () => ({
@@ -42,6 +43,16 @@ jest.mock('../../src/components/NutritionMacroCard', () => {
     ),
   };
 });
+
+const mockNavigation = {
+  goBack: jest.fn(),
+  navigate: jest.fn(),
+  setOptions: jest.fn(),
+} as any;
+jest.mock('@react-navigation/native', () => ({
+  ...jest.requireActual('@react-navigation/native'),
+  useNavigation: () => mockNavigation,
+}));
 
 const mockUseDeleteMeal = useDeleteMeal as jest.MockedFunction<typeof useDeleteMeal>;
 const mockUseMeal = useMeal as jest.MockedFunction<typeof useMeal>;
@@ -86,10 +97,7 @@ function buildMeal(overrides: Partial<Meal> = {}): Meal {
 
 describe('MealDetailScreen', () => {
   const meal = buildMeal();
-  const navigation = {
-    goBack: jest.fn(),
-    navigate: jest.fn(),
-  } as any;
+  const navigation = mockNavigation;
   const route = {
     key: 'MealDetail-key',
     name: 'MealDetail' as const,
@@ -105,6 +113,12 @@ describe('MealDetailScreen', () => {
         <MealDetailScreen navigation={navigation} route={route} />
       </SafeAreaProvider>,
     );
+
+  // On iOS the Edit action lives in the native header, applied via
+  // navigation.setOptions({ unstable_headerRightItems }); pull it back out to
+  // assert on the native item config.
+  const getHeaderRightItems = () =>
+    (navigation.setOptions as jest.Mock).mock.calls.at(-1)?.[0]?.unstable_headerRightItems;
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -139,8 +153,18 @@ describe('MealDetailScreen', () => {
 
     expect(screen.getByText('Lunch Bowl')).toBeTruthy();
     expect(screen.getByText('Per serving')).toBeTruthy();
-    expect(screen.getByText('Edit')).toBeTruthy();
     expect(screen.getByText('Delete Meal')).toBeTruthy();
+
+    const headerRightItems = getHeaderRightItems();
+    expect(headerRightItems).toBeTruthy();
+    expect(headerRightItems()).toEqual([
+      expect.objectContaining({
+        type: 'button',
+        label: 'Edit',
+        identifier: 'meal-detail-edit',
+        sharesBackground: true,
+      }),
+    ]);
   });
 
   it('logs the meal from the detail screen', () => {
@@ -161,9 +185,10 @@ describe('MealDetailScreen', () => {
   });
 
   it('opens MealAdd in edit mode for owners', () => {
-    const screen = renderScreen();
+    renderScreen();
 
-    fireEvent.press(screen.getByText('Edit'));
+    const editItem = getHeaderRightItems()()[0];
+    editItem.onPress();
 
     expect(navigation.navigate).toHaveBeenCalledWith('MealAdd', {
       mode: 'edit',
@@ -183,7 +208,7 @@ describe('MealDetailScreen', () => {
 
     const screen = renderScreen();
 
-    expect(screen.queryByText('Edit')).toBeNull();
+    expect(getHeaderRightItems()).toBeUndefined();
     expect(screen.queryByText('Delete Meal')).toBeNull();
     expect(screen.getByText('Log Meal')).toBeTruthy();
   });

@@ -18,6 +18,7 @@ import {
   Utensils,
   ClipboardCopy,
   PlusCircle,
+  Users,
 } from 'lucide-react';
 import { useState } from 'react';
 import EnhancedFoodSearch from '../../components/FoodSearch/FoodSearch';
@@ -31,7 +32,7 @@ import {
 import { useCopyFoodEntriesFromYesterdayMutation } from '@/hooks/Diary/useFoodEntries';
 import type { Food, FoodEntry, GlycemicIndex } from '@/types/food';
 import type { Meal, FoodEntryMeal } from '@/types/meal';
-
+import { toHourMinute } from '@workspace/shared';
 interface MealTotals {
   calories: number;
   protein: number;
@@ -88,6 +89,7 @@ interface MealCardProps {
   ) => Promise<void>;
   getEntryNutrition: (entry: FoodEntry | FoodEntryMeal) => MealTotals;
   onCopyClick: (mealType: string) => void;
+  onCopyFamilyClick: (mealType: string) => void;
   onConvertToMealClick: (mealType: string) => void;
   energyUnit: 'kcal' | 'kJ';
   convertEnergy: (
@@ -108,6 +110,7 @@ const MealCard = ({
   onRemoveEntry,
   getEntryNutrition,
   onCopyClick,
+  onCopyFamilyClick,
   onConvertToMealClick,
   energyUnit,
   convertEnergy,
@@ -117,9 +120,12 @@ const MealCard = ({
   customNutrients = [], // Default to empty array
 }: MealCardProps) => {
   const { t } = useTranslation();
-  const { loggingLevel, nutrientDisplayPreferences } = usePreferences();
+  const { loggingLevel, nutrientDisplayPreferences, getDateRelationToToday } =
+    usePreferences();
   const isMobile = useIsMobile();
   const platform = isMobile ? 'mobile' : 'desktop';
+
+  const selectedDateRelation = getDateRelationToToday(selectedDate);
 
   const [internalFoodSearchOpen, setInternalFoodSearchOpen] = useState(false);
 
@@ -272,6 +278,20 @@ const MealCard = ({
                           meal.name
                         ).toLowerCase()}.`,
                       })}
+                      <br />
+                      <span className="text-red-500">
+                        {(selectedDateRelation === 'past' &&
+                          t(
+                            'foodDiary.pastDateWarning',
+                            'Warning: You are adding food entries for a past date.'
+                          )) ||
+                          (selectedDateRelation === 'future' &&
+                            t(
+                              'foodDiary.futureDateWarning',
+                              'Warning: You are adding food entries for a future date.'
+                            )) ||
+                          ''}
+                      </span>
                     </DialogDescription>
                   </DialogHeader>
                   <EnhancedFoodSearch
@@ -303,6 +323,13 @@ const MealCard = ({
                 title="Copy to another date"
               >
                 <ClipboardCopy className="w-4 h-4" />
+              </Button>
+              <Button
+                size="default"
+                onClick={() => onCopyFamilyClick(meal.type)}
+                title="Copy with Family"
+              >
+                <Users className="w-4 h-4" />
               </Button>
               <Button
                 size="default"
@@ -433,6 +460,14 @@ const MealCard = ({
                               <span aria-hidden="true">&bull;</span>
                             )}
                             {servingLabel && <span>{servingLabel}</span>}
+                            {item.entry_time && (
+                              <>
+                                <span aria-hidden="true">&bull;</span>
+                                <span className="font-medium text-blue-600 dark:text-blue-400">
+                                  {toHourMinute(item.entry_time)}
+                                </span>
+                              </>
+                            )}
                             {isFromMealPlan && (
                               <Badge variant="outline" className="text-[10px]">
                                 From Plan
@@ -573,6 +608,11 @@ const MealCard = ({
                         <span className="text-sm text-gray-500">
                           {servingLabel}
                         </span>
+                        {item.entry_time && (
+                          <span className="text-xs bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full dark:bg-blue-900/30 dark:text-blue-300 font-medium">
+                            {toHourMinute(item.entry_time)}
+                          </span>
+                        )}
                         {isFromMealPlan && (
                           <Badge variant="outline" className="text-xs w-fit">
                             From Plan

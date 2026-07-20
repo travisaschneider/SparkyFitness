@@ -13,6 +13,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   Plus,
   Edit,
+  Copy,
   Trash2,
   Eye,
   Filter,
@@ -58,6 +59,7 @@ import {
 } from '@/utils/nutrientUtils';
 import { useMealInvalidation } from '@/hooks/useInvalidateKeys';
 import { useCustomNutrients } from '@/hooks/Foods/useCustomNutrients';
+import { filterAndSortByTerms } from '@workspace/shared';
 
 import { useBulkSelection } from '@/hooks/useBulkSelection';
 import BulkActionToolbar from '@/components/BulkActionToolbar';
@@ -81,6 +83,10 @@ const MealManagement: React.FC = () => {
     undefined
   );
   const [showMealBuilderDialog, setShowMealBuilderDialog] = useState(false);
+  const [showDuplicateDialog, setShowDuplicateDialog] = useState(false);
+  const [duplicatingMealId, setDuplicatingMealId] = useState<string | null>(
+    null
+  );
   const [viewingMeal, setViewingMeal] = useState<
     (Meal & { foods?: MealFood[] }) | null
   >(null);
@@ -99,11 +105,7 @@ const MealManagement: React.FC = () => {
 
   const filteredMeals = React.useMemo(
     () =>
-      meals
-        ? meals.filter((meal) =>
-            meal.name.toLowerCase().includes(searchTerm.toLowerCase())
-          )
-        : [],
+      meals ? filterAndSortByTerms(meals, (meal) => meal.name, searchTerm) : [],
     [meals, searchTerm]
   );
 
@@ -188,6 +190,14 @@ const MealManagement: React.FC = () => {
     setShowMealBuilderDialog(true);
   }, []);
 
+  // Open the builder in create mode seeded from the source meal. MealBuilder
+  // fetches and clones it (name + "(copy)", private), and an undefined mealId
+  // routes the save through createMeal, so the original is left untouched.
+  const handleDuplicateMeal = React.useCallback((mealId: string) => {
+    setDuplicatingMealId(mealId);
+    setShowDuplicateDialog(true);
+  }, []);
+
   const handleDeleteMeal = async (mealId: string, force: boolean = false) => {
     try {
       await deleteMeal({ mealId, force });
@@ -221,6 +231,16 @@ const MealManagement: React.FC = () => {
 
   const handleMealCancel = () => {
     setShowMealBuilderDialog(false);
+  };
+
+  const handleDuplicateClose = () => {
+    setShowDuplicateDialog(false);
+    setDuplicatingMealId(null);
+  };
+
+  const handleDuplicateSave = () => {
+    handleDuplicateClose();
+    invalidateMeals();
   };
 
   const handleViewDetails = React.useCallback(
@@ -434,6 +454,10 @@ const MealManagement: React.FC = () => {
                   <Edit className="mr-2 h-4 w-4" />
                   {t('mealManagement.editMeal', 'Edit Meal')}
                 </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => handleDuplicateMeal(meal.id!)}>
+                  <Copy className="mr-2 h-4 w-4" />
+                  {t('mealManagement.duplicateMeal', 'Duplicate Meal')}
+                </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() =>
                     meal.is_public
@@ -473,6 +497,7 @@ const MealManagement: React.FC = () => {
       energyUnit,
       convertEnergy,
       handleEditMeal,
+      handleDuplicateMeal,
       openDeleteConfirmation,
       handleViewDetails,
       handleUnshareMeal,
@@ -665,6 +690,39 @@ const MealManagement: React.FC = () => {
             onSave={handleMealSave}
             onCancel={handleMealCancel}
           />
+        </DialogContent>
+      </Dialog>
+
+      {/* Duplicate Meal Dialog */}
+      <Dialog
+        open={showDuplicateDialog}
+        onOpenChange={(open) => {
+          if (!open) handleDuplicateClose();
+        }}
+      >
+        <DialogContent
+          requireConfirmation
+          className="max-w-4xl max-h-[90vh] overflow-y-auto"
+        >
+          <DialogHeader>
+            <DialogTitle>
+              {t('mealManagement.duplicateMealDialogTitle', 'Duplicate Meal')}
+            </DialogTitle>
+            <DialogDescription>
+              {t(
+                'mealManagement.duplicateMealDialogDescription',
+                'Adjust the details and save this as a new meal. The original is not changed.'
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          {duplicatingMealId && (
+            <MealBuilder
+              key={duplicatingMealId}
+              duplicateFromMealId={duplicatingMealId}
+              onSave={handleDuplicateSave}
+              onCancel={handleDuplicateClose}
+            />
+          )}
         </DialogContent>
       </Dialog>
 

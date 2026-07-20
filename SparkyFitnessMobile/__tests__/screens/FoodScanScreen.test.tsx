@@ -149,6 +149,68 @@ describe('FoodScanScreen', () => {
     expect(mockNavigation.replace).not.toHaveBeenCalled();
   });
 
+  it('passes verified Yazio barcode results with serving descriptions to FoodEntryAdd', async () => {
+    mockLookupBarcodeV2.mockResolvedValue({
+      source: 'yazio',
+      food: {
+        id: 'remote-food-1',
+        name: 'Apple',
+        brand: 'Yazio',
+        barcode: '1234567890123',
+        provider_type: 'yazio',
+        provider_external_id: 'yazio-apple-1',
+        provider_verified: true,
+        default_variant: {
+          id: 'remote-variant-1',
+          serving_size: 1,
+          serving_unit: 'piece',
+          serving_description: '1 piece (200 g)',
+          calories: 50,
+          protein: 1,
+          carbs: 10,
+          fat: 1,
+        },
+        variants: [
+          {
+            id: 'remote-variant-1',
+            serving_size: 1,
+            serving_unit: 'piece',
+            serving_description: '1 piece (200 g)',
+            calories: 50,
+            protein: 1,
+            carbs: 10,
+            fat: 1,
+          },
+        ],
+      },
+    } as any);
+    const screen = renderScreen();
+
+    fireEvent(screen.getByTestId('camera-view'), 'onBarcodeScanned', {
+      data: '1234567890123',
+    });
+
+    await waitFor(() => {
+      expect(mockNavigation.replace).toHaveBeenCalledWith(
+        'FoodEntryAdd',
+        expect.objectContaining({
+          item: expect.objectContaining({
+            source: 'external',
+            provider_verified: true,
+            servingDescription: '1 piece (200 g)',
+            externalVariants: [
+              expect.objectContaining({
+                serving_size: 1,
+                serving_unit: 'piece',
+                serving_description: '1 piece (200 g)',
+              }),
+            ],
+          }),
+        }),
+      );
+    });
+  });
+
   it('shows the lookup-failed recovery card with the server message when lookup throws', async () => {
     mockLookupBarcodeV2.mockRejectedValue(
       new ApiError(
@@ -272,7 +334,9 @@ describe('FoodScanScreen', () => {
       });
     });
 
-    it('shows the gate when AI is configured for an unsupported provider', async () => {
+    it('treats any configured provider (e.g. mistral) as dispatchable: no gate, Photo available', async () => {
+      // Attempt-all: mistral is dispatched server-side, so the gate must NOT
+      // show and the Photo capture UI (library button) is available.
       mockUseActiveAiServiceSetting.mockReturnValue({
         data: {
           id: 's',
@@ -285,10 +349,11 @@ describe('FoodScanScreen', () => {
       const screen = renderScreenWithRoute({ initialMode: 'photo' });
 
       await waitFor(() => {
-        expect(
-          screen.getByText(/AI photo estimates aren.t set up/),
-        ).toBeTruthy();
+        expect(screen.getByLabelText('Choose photo from library')).toBeTruthy();
       });
+      expect(
+        screen.queryByText(/AI photo estimates aren.t set up/),
+      ).toBeNull();
     });
 
     it('pushes the intro screen on first Photo use when the user has not seen it', async () => {

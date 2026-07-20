@@ -19,6 +19,8 @@ import CalendarSheet, { type CalendarSheetRef } from '../components/CalendarShee
 import { useActivityForm, getActivityDraftSubmission } from '../hooks/useActivityForm';
 import { useSelectedExercise } from '../hooks/useSelectedExercise';
 import { useExerciseImageSource } from '../hooks/useExerciseImageSource';
+import { useScreenHeader, SAVE_LABEL } from '../hooks/useScreenHeader';
+import { useNativeIOSHeadersActive } from '../services/nativeTabBarPreference';
 import { useCreateExerciseEntry, useUpdateExerciseEntry } from '../hooks/useExerciseMutations';
 import { usePreferences } from '../hooks/usePreferences';
 import Toast from 'react-native-toast-message';
@@ -44,6 +46,7 @@ const ActivityAddScreen: React.FC<Props> = ({ navigation, route }) => {
     '--color-border-subtle',
     '--color-raised',
   ]) as [string, string, string, string, string];
+  const usesNativeHeader = useNativeIOSHeadersActive();
 
   const {
     state,
@@ -100,6 +103,17 @@ const ActivityAddScreen: React.FC<Props> = ({ navigation, route }) => {
     navigation.goBack();
   }, [discardDraft, isEditMode, hasDraftData, navigation]);
 
+  // Footer-save form: Save lives in the always-on sticky footer, so the header
+  // carries only the dismiss — a header Save would double the footer's.
+  const header = useScreenHeader({
+    left: {
+      kind: 'dismiss',
+      onPress: () => void handleCancel(),
+      disabled: isPending,
+      identifier: 'activity-add-cancel',
+    },
+  });
+
   const handleSave = useCallback(async () => {
     if (!submission.exerciseId || !submission.canSave) return;
 
@@ -135,18 +149,8 @@ const ActivityAddScreen: React.FC<Props> = ({ navigation, route }) => {
   ]);
 
   return (
-    <View className="flex-1 bg-background" style={{ paddingTop: insets.top }}>
-      {/* Header */}
-      <View className="flex-row items-center px-3 py-3">
-        <Button
-          variant="ghost"
-          onPress={handleCancel}
-          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          className="py-0 px-0"
-        >
-          <Icon name="close" size={24} color={accentPrimary} />
-        </Button>
-      </View>
+    <View className="flex-1 bg-background" style={usesNativeHeader ? undefined : { paddingTop: insets.top }}>
+      {header}
 
       <KeyboardAwareScrollView
         contentContainerClassName="px-4"
@@ -245,7 +249,7 @@ const ActivityAddScreen: React.FC<Props> = ({ navigation, route }) => {
                 value={state.duration}
                 onChangeText={setDuration}
                 placeholder="0"
-                keyboardType="number-pad"
+                keyboardType="decimal-pad"
                 returnKeyType="done"
               />
             </View>
@@ -329,7 +333,7 @@ const ActivityAddScreen: React.FC<Props> = ({ navigation, route }) => {
             <ActivityIndicator size="small" color="#fff" />
           ) : (
             <Text className="text-sm font-semibold text-center" style={{ color: '#fff' }}>
-              Save
+              {SAVE_LABEL}
             </Text>
           )}
         </Button>

@@ -34,7 +34,7 @@ describe('getExternalDataProvidersForUser - non-owner credential redaction', () 
           id: PROVIDER_ID,
           user_id: OWNER,
           provider_type: 'openfoodfacts',
-          shared_with_public: true,
+          is_public: true,
           is_active: true,
           is_strictly_private: false,
           app_id: 'username',
@@ -77,7 +77,7 @@ describe('getExternalDataProvidersForUser - non-owner credential redaction', () 
           id: PROVIDER_ID,
           user_id: OWNER,
           provider_type: 'openfoodfacts',
-          shared_with_public: false,
+          is_public: false,
           is_active: true,
           is_strictly_private: false,
           app_id: 'username',
@@ -98,6 +98,63 @@ describe('getExternalDataProvidersForUser - non-owner credential redaction', () 
   });
 });
 
+describe('redactProviderDetailsForNonOwner', () => {
+  const detailRow = {
+    id: PROVIDER_ID,
+    provider_name: 'My Garmin',
+    provider_type: 'garmin',
+    user_id: OWNER,
+    is_public: false,
+    is_active: true,
+    sync_frequency: 'daily',
+    token_expires_at: '2026-01-01T00:00:00.000Z',
+    is_strictly_private: false,
+    supports_barcode: false,
+    app_id: 'username',
+    app_key: 'secretpw',
+    base_url: 'http://192.168.1.5:9000',
+    external_user_id: 'garmin-external-id',
+    garth_dump: 'DECRYPTED-GARMIN-SESSION',
+  };
+
+  it('strips every decrypted secret (incl. garth_dump) for a non-owner', () => {
+    const row = externalProviderService.redactProviderDetailsForNonOwner(
+      { ...detailRow },
+      VIEWER
+    );
+
+    expect(row.app_id).toBeUndefined();
+    expect(row.app_key).toBeUndefined();
+    expect(row.garth_dump).toBeUndefined();
+    expect(row.external_user_id).toBeUndefined();
+    expect(row.base_url).toBeUndefined();
+    // Non-secret display fields survive.
+    expect(row.id).toBe(PROVIDER_ID);
+    expect(row.provider_name).toBe('My Garmin');
+    expect(row.provider_type).toBe('garmin');
+    expect(row.is_active).toBe(true);
+  });
+
+  it('returns the row untouched for the owner', () => {
+    const row = externalProviderService.redactProviderDetailsForNonOwner(
+      { ...detailRow },
+      OWNER
+    );
+
+    expect(row.app_id).toBe('username');
+    expect(row.app_key).toBe('secretpw');
+    expect(row.garth_dump).toBe('DECRYPTED-GARMIN-SESSION');
+    expect(row.base_url).toBe('http://192.168.1.5:9000');
+    expect(row.external_user_id).toBe('garmin-external-id');
+  });
+
+  it('passes through a null detail row', () => {
+    expect(
+      externalProviderService.redactProviderDetailsForNonOwner(null, VIEWER)
+    ).toBeNull();
+  });
+});
+
 describe('getExternalDataProviders - runtime availability', () => {
   it('marks YAZIO inactive when provider OAuth credentials are missing', async () => {
     // @ts-expect-error TS(2339): Property 'mockResolvedValue' does not exist on typ... Remove this comment to see the full error message
@@ -109,7 +166,7 @@ describe('getExternalDataProviders - runtime availability', () => {
         provider_name: 'YAZIO',
         app_id: 'user@example.com',
         app_key: 'password',
-        shared_with_public: false,
+        is_public: false,
         is_active: true,
         encrypted_access_token: null,
       },
@@ -135,7 +192,7 @@ describe('getExternalDataProviders - runtime availability', () => {
         provider_name: 'YAZIO',
         app_id: yazioAppId,
         app_key: yazioAppKey,
-        shared_with_public: false,
+        is_public: false,
         is_active: true,
         encrypted_access_token: null,
       },
@@ -160,22 +217,6 @@ describe('createExternalDataProvider - mutual exclusion', () => {
     await expect(promise).rejects.toThrow(pattern);
     await expect(promise).rejects.toMatchObject({ statusCode: 400 });
   };
-
-  it('rejects shared_with_public=true on an OFF row carrying credentials', async () => {
-    await expectBadRequest(
-      externalProviderService.createExternalDataProvider(OWNER, {
-        provider_type: 'openfoodfacts',
-        provider_name: 'OFF',
-        shared_with_public: true,
-        app_id: 'me',
-        app_key: 'pw',
-      }),
-      /cannot be stored on a provider row that is shared/
-    );
-    expect(
-      externalProviderRepository.createExternalDataProvider
-    ).not.toHaveBeenCalled();
-  });
 
   it('rejects an OFF row with only app_id populated', async () => {
     await expectBadRequest(
@@ -203,25 +244,6 @@ describe('createExternalDataProvider - mutual exclusion', () => {
     expect(
       externalProviderRepository.createExternalDataProvider
     ).not.toHaveBeenCalled();
-  });
-
-  it('allows public sharing of an OFF row without credentials', async () => {
-    // @ts-expect-error TS(2339): Property 'mockResolvedValue' does not exist on typ... Remove this comment to see the full error message
-    externalProviderRepository.createExternalDataProvider.mockResolvedValue({
-      id: PROVIDER_ID,
-    });
-    await externalProviderService.createExternalDataProvider(OWNER, {
-      provider_type: 'openfoodfacts',
-      provider_name: 'OFF',
-      shared_with_public: true,
-    });
-    expect(
-      externalProviderRepository.createExternalDataProvider
-    ).toHaveBeenCalled();
-    expect(invalidateOpenFoodFactsSession).toHaveBeenCalledWith(
-      OWNER,
-      PROVIDER_ID
-    );
   });
 
   it('rejects a YAZIO row without provider client credentials', async () => {
@@ -313,49 +335,12 @@ describe('updateExternalDataProvider - mutual exclusion + invalidation', () => {
     });
   });
 
-  it('rejects setting credentials on a row that is currently shared_with_public', async () => {
-    // @ts-expect-error TS(2339): Property 'mockResolvedValue' does not exist on typ... Remove this comment to see the full error message
-    externalProviderRepository.getExternalDataProviderById.mockResolvedValue({
-      id: PROVIDER_ID,
-      provider_type: 'openfoodfacts',
-      shared_with_public: true,
-      app_id: null,
-      app_key: null,
-    });
-
-    await expectBadRequest(
-      externalProviderService.updateExternalDataProvider(OWNER, PROVIDER_ID, {
-        app_id: 'me',
-        app_key: 'pw',
-      }),
-      /cannot be stored on a provider row that is shared/
-    );
-  });
-
-  it('rejects flipping shared_with_public=true on a row that already has credentials', async () => {
-    // @ts-expect-error TS(2339): Property 'mockResolvedValue' does not exist on typ... Remove this comment to see the full error message
-    externalProviderRepository.getExternalDataProviderById.mockResolvedValue({
-      id: PROVIDER_ID,
-      provider_type: 'openfoodfacts',
-      shared_with_public: false,
-      app_id: 'me',
-      app_key: 'pw',
-    });
-
-    await expectBadRequest(
-      externalProviderService.updateExternalDataProvider(OWNER, PROVIDER_ID, {
-        shared_with_public: true,
-      }),
-      /cannot be stored on a provider row that is shared/
-    );
-  });
-
   it('merges newly entered YAZIO client credentials with existing stored login credentials', async () => {
     // @ts-expect-error TS(2339): Property 'mockResolvedValue' does not exist on typ... Remove this comment to see the full error message
     externalProviderRepository.getExternalDataProviderById.mockResolvedValue({
       id: PROVIDER_ID,
       provider_type: 'yazio',
-      shared_with_public: false,
+      is_public: false,
       app_id: 'user@example.com',
       app_key: 'password',
     });
@@ -401,7 +386,7 @@ describe('updateExternalDataProvider - mutual exclusion + invalidation', () => {
     externalProviderRepository.getExternalDataProviderById.mockResolvedValue({
       id: PROVIDER_ID,
       provider_type: 'yazio',
-      shared_with_public: false,
+      is_public: false,
       app_id: existingAppId,
       app_key: existingAppKey,
     });
@@ -433,12 +418,78 @@ describe('updateExternalDataProvider - mutual exclusion + invalidation', () => {
     );
   });
 
+  it("does not merge a non-YAZIO row's credentials when the type is changed to YAZIO", async () => {
+    // The stored row is FatSecret; its app_key is a FatSecret secret, not a
+    // packed YAZIO credential. Switching the type to YAZIO must not pull that
+    // secret in to satisfy a blank password — the update is rejected so the
+    // user has to supply real YAZIO credentials.
+    // @ts-expect-error TS(2339): Property 'mockResolvedValue' does not exist on typ... Remove this comment to see the full error message
+    externalProviderRepository.getExternalDataProviderById.mockResolvedValue({
+      id: PROVIDER_ID,
+      provider_type: 'fatsecret',
+      is_public: false,
+      app_id: 'fs-client-id',
+      app_key: 'fs-secret',
+    });
+
+    await expectBadRequest(
+      externalProviderService.updateExternalDataProvider(OWNER, PROVIDER_ID, {
+        provider_type: 'yazio',
+        app_id: JSON.stringify({ username: 'me@example.com', clientId: 'cid' }),
+        app_key: JSON.stringify({ password: '', clientSecret: 'csecret' }),
+      }),
+      /YAZIO credentials must include/i
+    );
+
+    expect(
+      externalProviderRepository.updateExternalDataProvider
+    ).not.toHaveBeenCalled();
+  });
+
+  it('stores only the entered YAZIO credentials when changing type from a non-YAZIO row', async () => {
+    // @ts-expect-error TS(2339): Property 'mockResolvedValue' does not exist on typ... Remove this comment to see the full error message
+    externalProviderRepository.getExternalDataProviderById.mockResolvedValue({
+      id: PROVIDER_ID,
+      provider_type: 'fatsecret',
+      is_public: false,
+      app_id: 'fs-client-id',
+      app_key: 'fs-secret',
+    });
+
+    await externalProviderService.updateExternalDataProvider(
+      OWNER,
+      PROVIDER_ID,
+      {
+        provider_type: 'yazio',
+        app_id: JSON.stringify({ username: 'me@example.com', clientId: 'cid' }),
+        app_key: JSON.stringify({
+          password: 'newpass',
+          clientSecret: 'csecret',
+        }),
+      }
+    );
+
+    expect(
+      externalProviderRepository.updateExternalDataProvider
+    ).toHaveBeenCalledWith(
+      PROVIDER_ID,
+      OWNER,
+      expect.objectContaining({
+        app_id: JSON.stringify({ username: 'me@example.com', clientId: 'cid' }),
+        app_key: JSON.stringify({
+          password: 'newpass',
+          clientSecret: 'csecret',
+        }),
+      })
+    );
+  });
+
   it('allows setting credentials on a private OFF row and invalidates the session', async () => {
     // @ts-expect-error TS(2339): Property 'mockResolvedValue' does not exist on typ... Remove this comment to see the full error message
     externalProviderRepository.getExternalDataProviderById.mockResolvedValue({
       id: PROVIDER_ID,
       provider_type: 'openfoodfacts',
-      shared_with_public: false,
+      is_public: false,
       app_id: null,
       app_key: null,
     });
@@ -463,7 +514,7 @@ describe('updateExternalDataProvider - mutual exclusion + invalidation', () => {
     externalProviderRepository.getExternalDataProviderById.mockResolvedValue({
       id: PROVIDER_ID,
       provider_type: 'openfoodfacts',
-      shared_with_public: false,
+      is_public: false,
       app_id: null,
       app_key: null,
     });
@@ -484,7 +535,7 @@ describe('updateExternalDataProvider - mutual exclusion + invalidation', () => {
     externalProviderRepository.getExternalDataProviderById.mockResolvedValue({
       id: PROVIDER_ID,
       provider_type: 'openfoodfacts',
-      shared_with_public: false,
+      is_public: false,
       app_id: 'me',
       app_key: 'pw',
     });
@@ -500,37 +551,12 @@ describe('updateExternalDataProvider - mutual exclusion + invalidation', () => {
     ).not.toHaveBeenCalled();
   });
 
-  it('allows clearing credentials via explicit null on a public OFF row', async () => {
-    // @ts-expect-error TS(2339): Property 'mockResolvedValue' does not exist on typ... Remove this comment to see the full error message
-    externalProviderRepository.getExternalDataProviderById.mockResolvedValue({
-      id: PROVIDER_ID,
-      provider_type: 'openfoodfacts',
-      shared_with_public: true,
-      app_id: 'me',
-      app_key: 'pw',
-    });
-
-    await externalProviderService.updateExternalDataProvider(
-      OWNER,
-      PROVIDER_ID,
-      { app_id: null, app_key: null }
-    );
-
-    expect(
-      externalProviderRepository.updateExternalDataProvider
-    ).toHaveBeenCalledWith(
-      PROVIDER_ID,
-      OWNER,
-      expect.objectContaining({ app_id: null, app_key: null })
-    );
-  });
-
   it('does not invalidate OFF session for non-OFF providers', async () => {
     // @ts-expect-error TS(2339): Property 'mockResolvedValue' does not exist on typ... Remove this comment to see the full error message
     externalProviderRepository.getExternalDataProviderById.mockResolvedValue({
       id: PROVIDER_ID,
       provider_type: 'usda',
-      shared_with_public: false,
+      is_public: false,
     });
 
     await externalProviderService.updateExternalDataProvider(
@@ -592,7 +618,7 @@ describe('getActiveOpenFoodFactsProviderId', () => {
     expect(id).toBe('p2');
   });
 
-  it('returns null when no credentialed OFF provider exists', async () => {
+  it('falls back to the credential-less active provider when none has credentials', async () => {
     // @ts-expect-error TS(2339): Property 'mockResolvedValue' does not exist on typ... Remove this comment to see the full error message
     externalProviderRepository.getExternalDataProvidersByUserId.mockResolvedValue(
       [
@@ -604,6 +630,35 @@ describe('getActiveOpenFoodFactsProviderId', () => {
           app_key: null,
         },
       ]
+    );
+    const id =
+      await externalProviderService.getActiveOpenFoodFactsProviderId(OWNER);
+    expect(id).toBe('p1');
+  });
+
+  it('falls back to a self-hosted provider with only a base_url and no credentials', async () => {
+    // @ts-expect-error TS(2339): Property 'mockResolvedValue' does not exist on typ... Remove this comment to see the full error message
+    externalProviderRepository.getExternalDataProvidersByUserId.mockResolvedValue(
+      [
+        {
+          id: 'p1',
+          provider_type: 'openfoodfacts',
+          is_active: true,
+          app_id: null,
+          app_key: null,
+          base_url: 'http://sparkyfitness-foodfacts:8080',
+        },
+      ]
+    );
+    const id =
+      await externalProviderService.getActiveOpenFoodFactsProviderId(OWNER);
+    expect(id).toBe('p1');
+  });
+
+  it('returns null when no active OFF provider exists at all', async () => {
+    // @ts-expect-error TS(2339): Property 'mockResolvedValue' does not exist on typ... Remove this comment to see the full error message
+    externalProviderRepository.getExternalDataProvidersByUserId.mockResolvedValue(
+      []
     );
     const id =
       await externalProviderService.getActiveOpenFoodFactsProviderId(OWNER);

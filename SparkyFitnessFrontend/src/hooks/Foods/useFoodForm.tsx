@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import { usePreferences } from '@/contexts/PreferencesContext';
 import { useIsMobile } from '@/hooks/use-mobile';
@@ -10,6 +10,7 @@ import {
   foodVariantsOptions,
   useSaveFoodMutation,
 } from '@/hooks/Foods/useFoodVariants';
+import { searchBarcodeV2Options } from '@/hooks/Foods/useFoodsV2';
 import { isUUID, deepClone } from '@/utils/foodSearch';
 import { error } from '@/utils/logging';
 import {
@@ -23,6 +24,7 @@ import { nutrientFields } from '@/constants/foodForm';
 import {
   getConversionFactor,
   shouldOfferAiConversion,
+  convertNutrientAmount,
 } from '@workspace/shared';
 import type { AiEstimateData } from '@/hooks/Foods/useUnitConversion';
 import type {
@@ -351,26 +353,81 @@ export function useCustomFoodForm({
   >([]);
   const [variantMeta, setVariantMeta] = useState<VariantMeta[]>([]);
   const [showSyncConfirmation, setShowSyncConfirmation] = useState(false);
-  const [syncFoodId, setSyncFoodId] = useState<string | null>(null);
+  const [savedFoodResult, setSavedFoodResult] = useState<Food | null>(null);
+  const [showBarcodeConflictConfirmation, setShowBarcodeConflictConfirmation] =
+    useState(false);
+  const [barcodeConflictFoodName, setBarcodeConflictFoodName] = useState('');
   const [formData, setFormData] = useState({
     name: '',
     brand: '',
     is_quick_food: false,
+    barcode: '',
   });
+
+  // Provider nutrient values the user mapped onto this food (custom nutrient
+  // name -> { provider field label, the nutrient's chosen unit }). Re-applied
+  // whenever variants are rebuilt so the imported value survives — notably the
+  // rebuild the effect below runs when creating a custom nutrient refetches the
+  // list. Kept in a ref so recording a match doesn't retrigger that effect.
+  const pendingProviderMatchesRef = useRef<
+    Map<string, { label: string; unit?: string }>
+  >(new Map());
+
+  const applyProviderMatchesToVariants = useCallback(
+    <T extends FormFoodVariant>(list: T[]): T[] => {
+      if (pendingProviderMatchesRef.current.size === 0) return list;
+      return list.map((variant) => {
+        let next = variant;
+        for (const [
+          name,
+          { label, unit },
+        ] of pendingProviderMatchesRef.current) {
+          const providerValue = Number(next.provider_nutrients?.[label]);
+          if (!Number.isFinite(providerValue) || providerValue <= 0) continue;
+          // Convert the provider amount into the nutrient's unit when both are
+          // known and compatible; otherwise keep the provider's raw value.
+          const providerUnit = next.provider_nutrient_units?.[label];
+          const converted = convertNutrientAmount(
+            providerValue,
+            providerUnit,
+            unit
+          );
+          const value =
+            converted === null
+              ? providerValue
+              : Math.round(converted * 1e6) / 1e6;
+          next = {
+            ...next,
+            custom_nutrients: {
+              ...next.custom_nutrients,
+              [name]: value,
+            },
+            // A concrete provider value counts as a manual edit for AI rows.
+            ...(next.source === 'ai_estimate'
+              ? { source: 'manual' as const, ai_confidence: null }
+              : {}),
+          };
+        }
+        return next;
+      });
+    },
+    []
+  );
 
   const initializeVariantState = useCallback(
     (
       grouped: GroupedFormFoodVariant[],
       options: { autoScaleIntent: boolean; hasTrustedBase: boolean }
     ) => {
-      const trustedSnapshot = deepClone(grouped);
-      const scalingSnapshot = deepClone(grouped);
-      setVariants(grouped);
+      const withMatches = applyProviderMatchesToVariants(grouped);
+      const trustedSnapshot = deepClone(withMatches);
+      const scalingSnapshot = deepClone(withMatches);
+      setVariants(withMatches);
       setOriginalVariants(trustedSnapshot);
       setServingSizeScalingBaseVariants(scalingSnapshot);
-      setLoadedVariants(deepClone(grouped));
+      setLoadedVariants(deepClone(withMatches));
       setVariantMeta(
-        grouped.map((v) => ({
+        withMatches.map((v) => ({
           ...DEFAULT_VARIANT_META,
           aiEstimatedUnit: v.source === 'ai_estimate' ? v.serving_unit : null,
           autoScaleIntent: options.autoScaleIntent,
@@ -378,11 +435,11 @@ export function useCustomFoodForm({
         }))
       );
     },
-    []
+    [applyProviderMatchesToVariants]
   );
 
   const resetForm = useCallback(() => {
-    setFormData({ name: '', brand: '', is_quick_food: false });
+    setFormData({ name: '', brand: '', is_quick_food: false, barcode: '' });
     const defaultVariant = createDefaultFormVariant(customNutrients);
     const grouped = groupEquivalentVariants([defaultVariant]);
     initializeVariantState(grouped, {
@@ -469,6 +526,7 @@ export function useCustomFoodForm({
         name: food.name || '',
         brand: food.brand || '',
         is_quick_food: food.is_quick_food || false,
+        barcode: food.barcode || '',
       });
 
       if (food.variants && food.variants.length > 0) {
@@ -490,7 +548,7 @@ export function useCustomFoodForm({
         loadExistingVariants();
       }
     } else if (initialVariants && initialVariants.length > 0) {
-      setFormData({ name: '', brand: '', is_quick_food: false });
+      setFormData({ name: '', brand: '', is_quick_food: false, barcode: '' });
       const mapped = initialVariants.map((variant) =>
         foodVariantToFormVariant({
           ...variant,
@@ -891,6 +949,29 @@ export function useCustomFoodForm({
     }
   };
 
+  // Fill a custom nutrient's value across every variant from the matching
+  // provider field (kept per-variant on provider_nutrients, already scaled).
+  // Called when a user adds an alias / creates a nutrient from the provider
+  // nutrient viewer, so the food being imported reflects it immediately.
+  // Records the match so it survives the variant rebuild the create/update
+  // triggers (custom nutrient list refetch), and applies it now in single
+  // setState passes to avoid stale-state overwrites across variants.
+  const applyProviderNutrientMatch = (
+    nutrientName: string,
+    providerLabel: string,
+    nutrientUnit?: string
+  ) => {
+    pendingProviderMatchesRef.current.set(nutrientName, {
+      label: providerLabel,
+      unit: nutrientUnit,
+    });
+    setVariants((prev) => applyProviderMatchesToVariants(prev));
+    setOriginalVariants((prev) => applyProviderMatchesToVariants(prev));
+    setServingSizeScalingBaseVariants((prev) =>
+      applyProviderMatchesToVariants(prev)
+    );
+  };
+
   // Apply an AI-estimated conversion to a row. Anchor is always the food's
   // default variant (so AI estimates don't compound on prior AI values); when
   // the row IS the default, fall back to originalVariants[default] (the
@@ -1025,8 +1106,19 @@ export function useCustomFoodForm({
       return false;
     }
 
+    const barcode = formData.barcode ? formData.barcode.trim() : '';
+    const BARCODE_REGEX = /^\d{8,14}$/;
+    if (barcode && !BARCODE_REGEX.test(barcode)) {
+      toast({
+        title: 'Validation Error',
+        description: 'Barcode must be 8-14 digits.',
+        variant: 'destructive',
+      });
+      return false;
+    }
+
     return true;
-  }, [variants]);
+  }, [variants, formData.barcode]);
 
   const persistFood = useCallback(async () => {
     if (!user) return;
@@ -1039,9 +1131,10 @@ export function useCustomFoodForm({
         brand: formData.brand,
         is_quick_food: formData.is_quick_food,
         is_custom: true,
-        barcode: food?.barcode,
+        barcode: formData.barcode.trim() || null,
         provider_external_id: food?.provider_external_id,
         provider_type: food?.provider_type,
+        provider_verified: food?.provider_verified,
       };
 
       const expandedVariants: FormFoodVariant[] = [];
@@ -1071,7 +1164,7 @@ export function useCustomFoodForm({
       });
 
       if (food?.id && user?.id === food.user_id) {
-        setSyncFoodId(savedFood.id);
+        setSavedFoodResult(savedFood);
         setShowSyncConfirmation(true);
       } else {
         if (!food?.id) resetForm();
@@ -1084,6 +1177,11 @@ export function useCustomFoodForm({
     }
   }, [food, formData, onSave, resetForm, saveFood, user, variants]);
 
+  const handleBarcodeConflictConfirm = async () => {
+    setShowBarcodeConflictConfirmation(false);
+    await persistFood();
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -1091,19 +1189,42 @@ export function useCustomFoodForm({
       return;
     }
 
+    const barcode = formData.barcode ? formData.barcode.trim() : '';
+    if (barcode) {
+      try {
+        const lookup = await queryClient.fetchQuery(
+          searchBarcodeV2Options(barcode)
+        );
+        if (
+          lookup?.source === 'local' &&
+          lookup?.food &&
+          lookup?.food?.id !== food?.id
+        ) {
+          setBarcodeConflictFoodName(lookup.food.name || 'another food');
+          setShowBarcodeConflictConfirmation(true);
+          return;
+        }
+      } catch (err) {
+        console.error('Barcode conflict check failed:', err);
+      }
+    }
+
     await persistFood();
   };
 
-  const handleSyncConfirmation = async () => {
-    if (syncFoodId) {
+  const handleSyncConfirmation = async (sync: boolean) => {
+    if (!savedFoodResult) return;
+
+    if (sync) {
       try {
-        await updateFoodEntriesSnapshot(syncFoodId);
+        await updateFoodEntriesSnapshot(savedFoodResult.id);
       } catch {
         /* toast handled by QueryClient */
       }
     }
     setShowSyncConfirmation(false);
-    if (food) onSave(food);
+    onSave(savedFoodResult);
+    setSavedFoodResult(null);
   };
 
   const variantErrors = useMemo(
@@ -1141,8 +1262,13 @@ export function useCustomFoodForm({
     duplicateVariant,
     removeVariant,
     updateVariant,
+    applyProviderNutrientMatch,
     applyAiEstimate,
     handleSubmit,
     handleSyncConfirmation,
+    showBarcodeConflictConfirmation,
+    setShowBarcodeConflictConfirmation,
+    barcodeConflictFoodName,
+    handleBarcodeConflictConfirm,
   };
 }

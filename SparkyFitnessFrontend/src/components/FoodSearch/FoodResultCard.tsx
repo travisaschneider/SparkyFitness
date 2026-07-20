@@ -1,8 +1,9 @@
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { CheckCircle, Edit, Share2, Sparkles } from 'lucide-react';
+import { Edit, Share2, Sparkles } from 'lucide-react';
 import { NutrientGrid } from './NutrientGrid';
+import ProviderVerifiedBadge from './ProviderVerifiedBadge';
 import AllergenBadges from '@/components/AllergenBadges';
 import type { Food } from '@/types/food';
 import type { Meal } from '@/types/meal';
@@ -10,6 +11,7 @@ import type { UserCustomNutrient } from '@/types/customNutrient';
 import { useTranslation } from 'react-i18next';
 import { EnergyUnit } from '@/contexts/PreferencesContext';
 import { useActiveUser } from '@/contexts/ActiveUserContext';
+import { formatServingLabel } from '@/utils/foodServing';
 import {
   CONFIDENCE_TONES,
   OVERALL_CONFIDENCE_LABELS,
@@ -37,6 +39,9 @@ interface FoodResultCardProps {
   isMeal?: boolean;
   isOnline?: boolean;
   providerLabel?: string;
+  // When set, the provider badge is tinted with this colour (used by the All
+  // Providers "Top Matches" section to tell sources apart at a glance).
+  providerBadgeColor?: string;
   imageUrl?: string;
   nutrientConfig: NutrientGridConfig;
   onCardClick?: () => void;
@@ -48,6 +53,7 @@ const FoodResultCard = ({
   isMeal = false,
   isOnline = false,
   providerLabel,
+  providerBadgeColor,
   imageUrl,
   nutrientConfig,
   onCardClick,
@@ -58,6 +64,12 @@ const FoodResultCard = ({
   const isFood = !isMeal;
   const foodItem = item as Food;
   const mealItem = item as Meal;
+  // Hex opacity suffixes are only valid on a full #rrggbb value; other colour
+  // formats (CSS vars, named colours, #rgb) are used as-is without a tint.
+  const badgeIsHex =
+    !!providerBadgeColor &&
+    providerBadgeColor.startsWith('#') &&
+    providerBadgeColor.length === 7;
 
   return (
     <Card
@@ -80,18 +92,28 @@ const FoodResultCard = ({
                 </Badge>
               )}
               {providerLabel && (
-                <Badge variant="outline" className="text-xs">
+                <Badge
+                  variant="outline"
+                  className="text-xs"
+                  style={
+                    providerBadgeColor
+                      ? {
+                          color: providerBadgeColor,
+                          borderColor: badgeIsHex
+                            ? `${providerBadgeColor}55`
+                            : providerBadgeColor,
+                          backgroundColor: badgeIsHex
+                            ? `${providerBadgeColor}1f`
+                            : undefined,
+                        }
+                      : undefined
+                  }
+                >
                   {providerLabel}
                 </Badge>
               )}
               {isFood && foodItem.provider_verified && (
-                <Badge
-                  variant="outline"
-                  className="text-xs bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
-                >
-                  <CheckCircle className="h-3 w-3 mr-1" />
-                  {t('enhancedFoodSearch.verified', 'Verified')}
-                </Badge>
+                <ProviderVerifiedBadge />
               )}
               {isFood &&
                 foodItem.default_variant?.source === 'ai_estimate' &&
@@ -110,21 +132,29 @@ const FoodResultCard = ({
                     estimate
                   </Badge>
                 )}
-              {isFood && !isOnline && foodItem.user_id === activeUserId && (
-                <Badge variant="outline" className="text-xs">
-                  {t('enhancedFoodSearch.private', 'Private')}
-                </Badge>
-              )}
-              {isFood && !isOnline && foodItem.shared_with_public && (
-                <Badge variant="outline" className="text-xs">
-                  <Share2 className="h-3 w-3 mr-1" />
-                  {t('enhancedFoodSearch.public', 'Public')}
-                </Badge>
-              )}
-              {isFood &&
-                !isOnline &&
-                foodItem.user_id !== activeUserId &&
-                !foodItem.shared_with_public && (
+              {!isOnline &&
+                item.user_id &&
+                item.user_id === activeUserId &&
+                !(isFood
+                  ? foodItem.shared_with_public
+                  : mealItem.is_public) && (
+                  <Badge variant="outline" className="text-xs">
+                    {t('enhancedFoodSearch.private', 'Private')}
+                  </Badge>
+                )}
+              {!isOnline &&
+                (isFood ? foodItem.shared_with_public : mealItem.is_public) && (
+                  <Badge variant="outline" className="text-xs">
+                    <Share2 className="h-3 w-3 mr-1" />
+                    {t('enhancedFoodSearch.public', 'Public')}
+                  </Badge>
+                )}
+              {!isOnline &&
+                item.user_id &&
+                item.user_id !== activeUserId &&
+                !(isFood
+                  ? foodItem.shared_with_public
+                  : mealItem.is_public) && (
                   <Badge variant="outline" className="text-xs">
                     {t('enhancedFoodSearch.family', 'Family')}
                   </Badge>
@@ -158,8 +188,7 @@ const FoodResultCard = ({
                   customNutrients={nutrientConfig.customNutrients}
                 />
                 <p className="text-xs text-gray-500 mt-1">
-                  Per {foodItem.default_variant.serving_size}
-                  {foodItem.default_variant.serving_unit}
+                  Per {formatServingLabel(foodItem.default_variant)}
                 </p>
                 <AllergenBadges
                   allergens={foodItem.default_variant.allergens}

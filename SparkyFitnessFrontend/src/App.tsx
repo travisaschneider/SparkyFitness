@@ -6,6 +6,7 @@ import {
   usePreferences,
 } from '@/contexts/PreferencesContext';
 import { ChatbotVisibilityProvider } from '@/contexts/ChatbotVisibilityContext';
+import { ChatToolCategoriesProvider } from '@/contexts/ChatToolCategoriesContext';
 import LanguageHandler from '@/components/LanguageHandler';
 import { WaterContainerProvider } from '@/contexts/WaterContainerContext';
 import {
@@ -30,7 +31,10 @@ import {
 import { AuthProvider, useAuth } from '@/hooks/useAuth';
 import OidcCallback from '@/components/OidcCallback';
 import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
-import { useCurrentVersionQuery } from './hooks/useGeneralQueries';
+import {
+  useCurrentVersionQuery,
+  useInvalidateGithubVersion,
+} from './hooks/useGeneralQueries';
 import {
   RootErrorBoundary,
   RouteErrorBoundary,
@@ -52,6 +56,12 @@ const FoodDatabaseManager = lazyWithChunkRecovery(
   () => import('./pages/Foods/Foods')
 );
 const Reports = lazyWithChunkRecovery(() => import('./pages/Reports/Reports'));
+const Medications = lazyWithChunkRecovery(
+  () => import('./pages/Medications/Medications')
+);
+const CyclePage = lazyWithChunkRecovery(
+  () => import('./pages/Cycle/CyclePage')
+);
 const ExerciseDatabaseManager = lazyWithChunkRecovery(
   () => import('./pages/Exercises/Exercises')
 );
@@ -126,6 +136,12 @@ const Root = () => {
   const [showNewReleaseDialog, setShowNewReleaseDialog] = useState(false);
   const { data: appVersion } = useCurrentVersionQuery();
   const navigate = useNavigate();
+  const invalidateGithubVersion = useInvalidateGithubVersion();
+
+  const handleShowNewReleaseDialog = () => {
+    invalidateGithubVersion();
+    setShowNewReleaseDialog(true);
+  };
 
   const handleDismissRelease = (version: string) => {
     localStorage.setItem('dismissedReleaseVersion', version);
@@ -158,7 +174,12 @@ const Root = () => {
                     </div>
                   }
                 >
-                  <Outlet context={{ setShowAboutDialog }} />
+                  <Outlet
+                    context={{
+                      setShowAboutDialog,
+                      setShowNewReleaseDialog: handleShowNewReleaseDialog,
+                    }}
+                  />
                 </Suspense>
                 <ErrorBoundary
                   fallback={<ComponentFallback />}
@@ -202,6 +223,11 @@ const Root = () => {
                   }}
                 >
                   <NewReleaseDialog
+                    key={
+                      showNewReleaseDialog
+                        ? latestRelease?.version || 'open'
+                        : 'closed'
+                    }
                     isOpen={showNewReleaseDialog}
                     onClose={() => setShowNewReleaseDialog(false)}
                     releaseInfo={latestRelease}
@@ -220,11 +246,18 @@ const Root = () => {
 
 interface OutletContextType {
   setShowAboutDialog: (show: boolean) => void;
+  setShowNewReleaseDialog: (show: boolean) => void;
 }
 
 const IndexWrapper = () => {
-  const { setShowAboutDialog } = useOutletContext<OutletContextType>();
-  return <Index onShowAboutDialog={() => setShowAboutDialog(true)} />;
+  const { setShowAboutDialog, setShowNewReleaseDialog } =
+    useOutletContext<OutletContextType>();
+  return (
+    <Index
+      onShowAboutDialog={() => setShowAboutDialog(true)}
+      onShowNewReleaseDialog={() => setShowNewReleaseDialog(true)}
+    />
+  );
 };
 
 const ReportsWrapper = () => {
@@ -329,6 +362,16 @@ const router = createBrowserRouter([
             ErrorBoundary: RouteErrorBoundary,
           },
           {
+            path: 'medications',
+            Component: Medications,
+            ErrorBoundary: RouteErrorBoundary,
+          },
+          {
+            path: 'cycle',
+            Component: CyclePage,
+            ErrorBoundary: RouteErrorBoundary,
+          },
+          {
             path: 'settings',
             Component: Settings,
             ErrorBoundary: RouteErrorBoundary,
@@ -378,7 +421,9 @@ const App = () => {
     <>
       <ReactQueryDevtools buttonPosition="top-left" initialIsOpen={false} />
       <ChatbotVisibilityProvider>
-        <RouterProvider router={router} />
+        <ChatToolCategoriesProvider>
+          <RouterProvider router={router} />
+        </ChatToolCategoriesProvider>
       </ChatbotVisibilityProvider>
     </>
   );

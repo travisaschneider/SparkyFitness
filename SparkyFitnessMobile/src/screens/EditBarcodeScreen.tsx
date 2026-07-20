@@ -1,18 +1,19 @@
 import React, { useEffect, useState } from 'react';
-import { Alert, ScrollView, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, ScrollView, Text, View } from 'react-native';
 import { CommonActions } from '@react-navigation/native';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import Toast from 'react-native-toast-message';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useCSSVariable } from 'uniwind';
 import FormInput from '../components/FormInput';
-import Icon from '../components/Icon';
 import Button from '../components/ui/Button';
 import { addLog } from '../services/LogService';
 import { updateFood } from '../services/api/foodsApi';
 import { lookupBarcodeV2 } from '../services/api/externalFoodSearchApi';
 import { foodsQueryKey } from '../hooks/queryKeys';
 import type { RootStackScreenProps } from '../types/navigation';
+import { useScreenHeader, SAVE_LABEL } from '../hooks/useScreenHeader';
+import { useNativeIOSHeadersActive } from '../services/nativeTabBarPreference';
 
 type EditBarcodeScreenProps = RootStackScreenProps<'EditBarcode'>;
 
@@ -29,17 +30,18 @@ const EditBarcodeScreen: React.FC<EditBarcodeScreenProps> = ({ navigation, route
   const { foodId, foodName, currentBarcode, returnKey, pendingScannedBarcode, scannedBarcodeNonce } =
     route.params;
   const insets = useSafeAreaInsets();
+  const usesNativeHeader = useNativeIOSHeadersActive();
   const queryClient = useQueryClient();
-  const [accentColor, textSecondary] = useCSSVariable([
-    '--color-accent-primary',
-    '--color-text-secondary',
-  ]) as [string, string];
+  const textSecondary = useCSSVariable('--color-text-secondary') as string;
 
   const [value, setValue] = useState(currentBarcode ?? '');
 
   // Apply a barcode handed back from the FoodScan capture-barcode flow.
   useEffect(() => {
     if (scannedBarcodeNonce == null || pendingScannedBarcode == null) return;
+    // Consume a one-shot navigation param: guarded by the nonce and paired with
+    // clearing the param via setParams, so it can't move to a render-time derive.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setValue(pendingScannedBarcode);
     navigation.setParams({
       pendingScannedBarcode: undefined,
@@ -168,33 +170,23 @@ const EditBarcodeScreen: React.FC<EditBarcodeScreenProps> = ({ navigation, route
     );
   };
 
+  // Diary/Food drill-in, so the left slot stays a back chevron (not a modal X).
+  const header = useScreenHeader({
+    title: 'Barcode',
+    left: { kind: 'back' },
+    right: {
+      kind: 'primary',
+      label: SAVE_LABEL,
+      disabled: saveDisabled,
+      onPress: () => void handleSave(),
+      accessibilityLabel: 'Save barcode',
+      identifier: 'edit-barcode-save',
+    },
+  });
+
   return (
-    <View className="flex-1 bg-background" style={{ paddingTop: insets.top }}>
-      <View className="flex-row items-center px-4 py-3 border-b border-border-subtle">
-        <TouchableOpacity
-          onPress={() => navigation.goBack()}
-          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-        >
-          <Icon name="chevron-back" size={22} color={accentColor} />
-        </TouchableOpacity>
-        <Text
-          pointerEvents="none"
-          className="absolute left-0 right-0 text-center text-text-primary text-lg font-semibold"
-        >
-          Barcode
-        </Text>
-        <View className="ml-auto">
-          <Button
-            variant="header"
-            onPress={() => {
-              void handleSave();
-            }}
-            disabled={saveDisabled}
-          >
-            Save
-          </Button>
-        </View>
-      </View>
+    <View className="flex-1 bg-background" style={usesNativeHeader ? undefined : { paddingTop: insets.top }}>
+      {header}
 
       <ScrollView
         contentContainerStyle={{ padding: 16, gap: 16 }}

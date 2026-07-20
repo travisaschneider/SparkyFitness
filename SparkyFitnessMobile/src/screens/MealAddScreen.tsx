@@ -23,6 +23,7 @@ import { useCreateMeal, useMeal, useUpdateMeal } from '../hooks';
 import { consumePendingMealIngredientSelection } from '../services/mealBuilderSelection';
 import { mealIngredientDraftToFoodInfo } from '../types/foodInfo';
 import type { MealFoodPayload, MealIngredientDraft } from '../types/meals';
+import type { FoodUnitVariant } from '../types/foodUnitVariants';
 import type { RootStackScreenProps } from '../types/navigation';
 import {
   formatCaloriesDisplay,
@@ -31,6 +32,8 @@ import {
 } from '../utils/foodDetails';
 import { buildMealIngredientDraftFromMealFood } from '../utils/mealBuilderDraft';
 import { DECIMAL_INPUT_REGEX, parseDecimalInput } from '../utils/numericInput';
+import { useNativeIOSHeadersActive } from '../services/nativeTabBarPreference';
+import { useScreenHeader, SAVE_LABEL, SAVING_LABEL } from '../hooks/useScreenHeader';
 
 type MealAddScreenProps = RootStackScreenProps<'MealAdd'>;
 
@@ -102,13 +105,16 @@ const MealAddScreen: React.FC<MealAddScreenProps> = ({ navigation, route }) => {
   const isEditMode = route.params?.mode === 'edit';
   const editMealId = isEditMode ? route.params.mealId : undefined;
   const insets = useSafeAreaInsets();
-  const [accentColor, textMuted, proteinColor, carbsColor, fatColor] = useCSSVariable([
-    '--color-accent-primary',
-    '--color-text-muted',
-    '--color-macro-protein',
-    '--color-macro-carbs',
-    '--color-macro-fat',
-  ]) as [string, string, string, string, string];
+  const usesNativeHeader = useNativeIOSHeadersActive();
+  const [accentColor, textMuted, proteinColor, carbsColor, fatColor, borderSubtle] =
+    useCSSVariable([
+      '--color-accent-primary',
+      '--color-text-muted',
+      '--color-macro-protein',
+      '--color-macro-carbs',
+      '--color-macro-fat',
+      '--color-border-subtle',
+    ]) as [string, string, string, string, string, string];
 
   const [mealName, setMealName] = useState('');
   const [description, setDescription] = useState('');
@@ -134,6 +140,8 @@ const MealAddScreen: React.FC<MealAddScreenProps> = ({ navigation, route }) => {
   useEffect(() => {
     if (!isEditMode || !editMeal || initializedMealId === editMeal.id) return;
 
+    // One-time form initialization from the async-loaded meal, guarded by its id.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setMealName(editMeal.name);
     setDescription(editMeal.description ?? '');
     const loadedServingSize = editMeal.serving_size ?? 1;
@@ -235,11 +243,45 @@ const MealAddScreen: React.FC<MealAddScreenProps> = ({ navigation, route }) => {
   };
 
   const editIngredient = (ingredient: MealIngredientDraft, ingredientIndex: number) => {
+    // Linked sub-meal ingredients aren't editable in the mobile builder yet
+    // (quantity editing for a linked meal needs a meal-serving picker, not the
+    // food/variant editor below) — remove and re-add via the web app instead.
+    if (ingredient.item_type === 'meal') {
+      Toast.show({
+        type: 'info',
+        text1: 'Linked meal',
+        text2: 'Edit this sub-meal ingredient in the web app.',
+      });
+      return;
+    }
+    // Pass the ingredient's stored unit snapshot as a selectedVariantOverride so
+    // FoodEntryAdd opens with the actual unit/nutrition rather than the default variant.
+    const variantOverride: FoodUnitVariant = {
+      id: ingredient.variant_id || undefined,
+      serving_size: ingredient.serving_size,
+      serving_unit: ingredient.serving_unit,
+      calories: ingredient.calories,
+      protein: ingredient.protein,
+      carbs: ingredient.carbs,
+      fat: ingredient.fat,
+      dietary_fiber: ingredient.dietary_fiber,
+      saturated_fat: ingredient.saturated_fat,
+      sodium: ingredient.sodium,
+      sugars: ingredient.sugars,
+      trans_fat: ingredient.trans_fat,
+      potassium: ingredient.potassium,
+      calcium: ingredient.calcium,
+      iron: ingredient.iron,
+      cholesterol: ingredient.cholesterol,
+      vitamin_a: ingredient.vitamin_a,
+      vitamin_c: ingredient.vitamin_c,
+    };
     navigation.navigate('FoodEntryAdd', {
       item: mealIngredientDraftToFoodInfo(ingredient),
       pickerMode: 'meal-builder',
       ingredientIndex,
       returnDepth: 1,
+      selectedVariantOverride: variantOverride,
     });
   };
 
@@ -361,22 +403,25 @@ const MealAddScreen: React.FC<MealAddScreenProps> = ({ navigation, route }) => {
 
   const isSaving = isPending || isUpdatePending;
 
-  const renderHeader = () => (
-    <View className="flex-row items-center px-4 py-3 border-b border-border-subtle">
-      <TouchableOpacity
-        onPress={() => navigation.goBack()}
-        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-        className="z-10"
-        accessibilityLabel="Back"
-        accessibilityRole="button"
-      >
-        <Icon name="chevron-back" size={22} color={accentColor} />
-      </TouchableOpacity>
-      <Text className="absolute left-0 right-0 text-center text-text-primary text-lg font-semibold">
-        {isEditMode ? 'Edit Meal' : 'Create Meal'}
-      </Text>
-    </View>
-  );
+  const header = useScreenHeader({
+    title: isEditMode ? 'Edit Meal' : 'Create Meal',
+    left: {
+      kind: 'dismiss',
+      onPress: () => navigation.goBack(),
+      disabled: isSaving,
+      identifier: isEditMode ? 'meal-edit-cancel' : 'meal-create-cancel',
+    },
+    right: {
+      kind: 'primary',
+      label: SAVE_LABEL,
+      busyLabel: SAVING_LABEL,
+      busy: isSaving,
+      disabled: isSaving,
+      placement: 'native-only',
+      onPress: () => void handleSaveMeal(),
+      identifier: isEditMode ? 'meal-edit-save' : 'meal-create-save',
+    },
+  });
 
   if (isEditMode && isEditMealLoading && !editMeal) {
     return (
@@ -384,7 +429,7 @@ const MealAddScreen: React.FC<MealAddScreenProps> = ({ navigation, route }) => {
         className="flex-1 bg-background"
         style={Platform.OS === 'android' ? { paddingTop: insets.top } : undefined}
       >
-        {renderHeader()}
+        {header}
         <StatusView loading title="Loading meal..." />
       </View>
     );
@@ -396,7 +441,7 @@ const MealAddScreen: React.FC<MealAddScreenProps> = ({ navigation, route }) => {
         className="flex-1 bg-background"
         style={Platform.OS === 'android' ? { paddingTop: insets.top } : undefined}
       >
-        {renderHeader()}
+        {header}
         <StatusView
           icon="alert-circle"
           iconColor="#EF4444"
@@ -414,11 +459,11 @@ const MealAddScreen: React.FC<MealAddScreenProps> = ({ navigation, route }) => {
       className="flex-1 bg-background"
       style={Platform.OS === 'android' ? { paddingTop: insets.top } : undefined}
     >
-      {renderHeader()}
+      {header}
 
       <ScrollView
         className="flex-1"
-        contentContainerClassName="px-4 pt-4 pb-safe-or-8 gap-4"
+        contentContainerClassName="px-4 pt-4 pb-8 gap-4"
         keyboardShouldPersistTaps="handled"
       >
         <View className="bg-surface rounded-xl p-4 gap-4 shadow-sm">
@@ -591,6 +636,16 @@ const MealAddScreen: React.FC<MealAddScreenProps> = ({ navigation, route }) => {
                               </Text>
                             ) : null}
                           </Text>
+                          {ingredient.item_type === 'meal' ? (
+                            <View
+                              className="self-start rounded-full px-2 py-0.5 mt-1"
+                              style={{ backgroundColor: `${textMuted}1A` }}
+                            >
+                              <Text className="text-xs font-medium" style={{ color: textMuted }}>
+                                Linked meal
+                              </Text>
+                            </View>
+                          ) : null}
                           <Text className="text-text-muted text-sm mt-1">
                             {ingredientProtein}g protein{' \u00b7 '}{ingredientCarbs}g carbs{' \u00b7 '}{ingredientFat}g fat
                           </Text>
@@ -670,22 +725,35 @@ const MealAddScreen: React.FC<MealAddScreenProps> = ({ navigation, route }) => {
           ) : null}
         </View>
 
-        <Button
-          variant="primary"
-          onPress={() => {
-            void handleSaveMeal();
-          }}
-          disabled={isSaving}
-        >
-          {isSaving ? (
-            <ActivityIndicator size="small" color="#fff" />
-          ) : (
-            <Text className="text-white text-base font-semibold">
-              {isEditMode ? 'Save Changes' : 'Save Meal'}
-            </Text>
-          )}
-        </Button>
       </ScrollView>
+
+      {!usesNativeHeader && (
+        /* Sticky footer */
+        <View
+          className="px-4 py-3"
+          style={{
+            paddingBottom: Math.max(insets.bottom, 12),
+            borderTopWidth: 1,
+            borderTopColor: borderSubtle,
+          }}
+        >
+          <Button
+            variant="primary"
+            onPress={() => {
+              void handleSaveMeal();
+            }}
+            disabled={isSaving}
+          >
+            {isSaving ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Text className="text-white text-base font-semibold">
+                {SAVE_LABEL}
+              </Text>
+            )}
+          </Button>
+        </View>
+      )}
     </View>
   );
 };

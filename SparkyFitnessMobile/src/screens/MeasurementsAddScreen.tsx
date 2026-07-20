@@ -31,6 +31,8 @@ import {
 } from '../utils/unitConversions';
 import { parseDecimalInput } from '../utils/numericInput';
 import type { RootStackScreenProps } from '../types/navigation';
+import { useNativeIOSHeadersActive } from '../services/nativeTabBarPreference';
+import { useScreenHeader, SAVE_LABEL, SAVING_LABEL } from '../hooks/useScreenHeader';
 
 type Props = RootStackScreenProps<'MeasurementsAdd'>;
 
@@ -106,6 +108,7 @@ const joinWithAnd = (items: string[]): string => {
 
 const MeasurementsAddScreen: React.FC<Props> = ({ navigation, route }) => {
   const insets = useSafeAreaInsets();
+  const usesNativeHeader = useNativeIOSHeadersActive();
   const calendarSheetRef = useRef<CalendarSheetRef>(null);
 
   const [accentPrimary, borderSubtle, textSecondary] = useCSSVariable([
@@ -149,6 +152,9 @@ const MeasurementsAddScreen: React.FC<Props> = ({ navigation, route }) => {
     const dirtyFields = new Set(dirtyFieldsRef.current);
 
     if (isLoading || isPreferencesLoading) {
+      // Syncs the form to the latest measurements snapshot (cached-then-fresh)
+      // with dirty-field tracking; a legitimate external-data sync effect.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setForm(EMPTY_FORM);
       setPrefilledKeys(new Set());
       return;
@@ -418,26 +424,27 @@ const MeasurementsAddScreen: React.FC<Props> = ({ navigation, route }) => {
     ) : null;
   };
 
+  const header = useScreenHeader({
+    title: 'Measurements',
+    left: { kind: 'dismiss', onPress: handleClose, disabled: isSaveDisabled },
+    right: {
+      kind: 'primary',
+      label: SAVE_LABEL,
+      busyLabel: SAVING_LABEL,
+      busy: upsertMutation.isPending,
+      disabled: isSaveDisabled,
+      placement: 'native-only',
+      onPress: handleSave,
+      identifier: 'measurements-save',
+    },
+  });
+
   return (
     <View
       className="flex-1 bg-background"
       style={Platform.OS === 'android' ? { paddingTop: insets.top } : undefined}
     >
-      {/* Header */}
-      <View className="flex-row items-center justify-between px-4 py-3 border-b border-border-subtle">
-        <Button
-          variant="ghost"
-          onPress={handleClose}
-          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-          className="z-10 p-0"
-          accessibilityLabel="Close"
-        >
-          <Icon name="close" size={22} color={accentPrimary} />
-        </Button>
-        <Text className="absolute left-0 right-0 text-center text-text-primary text-lg font-semibold">
-          Measurements
-        </Text>
-      </View>
+      {header}
 
       <KeyboardAwareScrollView
         contentContainerClassName="px-4 py-4"
@@ -600,6 +607,7 @@ const MeasurementsAddScreen: React.FC<Props> = ({ navigation, route }) => {
       </KeyboardAwareScrollView>
 
       {/* Sticky footer */}
+      {!usesNativeHeader && (
       <View
         className="px-4 py-3"
         style={{
@@ -618,11 +626,12 @@ const MeasurementsAddScreen: React.FC<Props> = ({ navigation, route }) => {
             <ActivityIndicator size="small" color="#fff" />
           ) : (
             <Text className="text-sm font-semibold text-center" style={{ color: '#fff' }}>
-              Save
+              {SAVE_LABEL}
             </Text>
           )}
         </Button>
       </View>
+      )}
 
       <CalendarSheet
         ref={calendarSheetRef}

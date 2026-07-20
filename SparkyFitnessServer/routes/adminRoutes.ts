@@ -3,14 +3,33 @@ import { authenticate, isAdmin } from '../middleware/authMiddleware.js';
 import authService from '../services/authService.js';
 import userRepository from '../models/userRepository.js';
 import chatRepository from '../models/chatRepository.js';
+import externalProviderRepository from '../models/externalProviderRepository.js';
+import {
+  CreateGlobalExternalDataProviderBodySchema,
+  UpdateGlobalExternalDataProviderBodySchema,
+} from '../schemas/externalProviderSchemas.js';
 import { log } from '../config/logging.js';
 import { logAdminAction } from '../services/authService.js';
+import { requiresApiKey } from '../ai/providerDispatch.js';
+import {
+  assertOutboundUrlShapeAndLiteralAllowed,
+  requiresUserSuppliedAiUrl,
+} from '../utils/outboundUrlPolicy.js';
 import { auth } from '../auth.js';
 const router = express.Router();
 // Middleware to ensure only admins can access these routes
 // This will be enhanced later to prioritize SPARKY_FITNESS_ADMIN_EMAIL
 router.use(authenticate);
 router.use(isAdmin);
+
+// Validates a provider_type value against the external_provider_types lookup
+// table. The set of valid types is dynamic (extended via migrations), so this
+// is checked at runtime rather than with a static Zod enum.
+async function isValidProviderType(providerType: string): Promise<boolean> {
+  const types = await externalProviderRepository.getExternalProviderTypes();
+  return types.some((t: { id: string }) => t.id === providerType);
+}
+
 /**
  * @swagger
  * /admin/users:
@@ -553,6 +572,9 @@ router.get('/ai-service-settings/global', async (req, res, next) => {
  *                 type: boolean
  *               model_name:
  *                 type: string
+ *               chat_tool_profile:
+ *                 type: string
+ *                 enum: [full, core]
  *     responses:
  *       201:
  *         description: Global AI service setting created
@@ -573,16 +595,37 @@ router.post('/ai-service-settings/global', async (req, res, next) => {
       system_prompt,
       is_active,
       model_name,
+      chat_tool_profile,
     } = req.body;
     if (!service_name || !service_type) {
       return res
         .status(400)
         .json({ error: 'service_name and service_type are required.' });
     }
-    if (service_type !== 'ollama' && !api_key) {
+    if (requiresApiKey(service_type) && !api_key) {
       return res
         .status(400)
-        .json({ error: 'api_key is required for non-Ollama services.' });
+        .json({ error: 'api_key is required for this service type.' });
+    }
+    if (requiresUserSuppliedAiUrl(service_type) && !custom_url) {
+      return res
+        .status(400)
+        .json({ error: 'custom_url is required for this service type.' });
+    }
+    if (custom_url) {
+      try {
+        assertOutboundUrlShapeAndLiteralAllowed(custom_url, {
+          allowPrivateNetwork: true,
+          reason: 'admin',
+        });
+      } catch (error) {
+        return res.status(400).json({
+          error:
+            error instanceof Error
+              ? error.message
+              : 'custom_url is invalid for this service type.',
+        });
+      }
     }
     const settingData = {
       service_name,
@@ -592,6 +635,7 @@ router.post('/ai-service-settings/global', async (req, res, next) => {
       system_prompt: system_prompt || null,
       is_active: is_active || false,
       model_name: model_name || null,
+      chat_tool_profile: chat_tool_profile || 'full',
     };
     const result =
       await chatRepository.upsertGlobalAiServiceSetting(settingData);
@@ -642,6 +686,9 @@ router.post('/ai-service-settings/global', async (req, res, next) => {
  *                 type: boolean
  *               model_name:
  *                 type: string
+ *               chat_tool_profile:
+ *                 type: string
+ *                 enum: [full, core]
  *     responses:
  *       200:
  *         description: Global AI service setting updated
@@ -665,6 +712,7 @@ router.put('/ai-service-settings/global/:id', async (req, res, next) => {
       system_prompt,
       is_active,
       model_name,
+      chat_tool_profile,
     } = req.body;
     // Verify the setting exists and is global
     const existing = await chatRepository.getGlobalAiServiceSettingById(id);
@@ -678,6 +726,26 @@ router.put('/ai-service-settings/global/:id', async (req, res, next) => {
         .status(400)
         .json({ error: 'service_name and service_type are required.' });
     }
+    if (requiresUserSuppliedAiUrl(service_type) && !custom_url) {
+      return res
+        .status(400)
+        .json({ error: 'custom_url is required for this service type.' });
+    }
+    if (custom_url) {
+      try {
+        assertOutboundUrlShapeAndLiteralAllowed(custom_url, {
+          allowPrivateNetwork: true,
+          reason: 'admin',
+        });
+      } catch (error) {
+        return res.status(400).json({
+          error:
+            error instanceof Error
+              ? error.message
+              : 'custom_url is invalid for this service type.',
+        });
+      }
+    }
     const settingData = {
       id,
       service_name,
@@ -687,6 +755,7 @@ router.put('/ai-service-settings/global/:id', async (req, res, next) => {
       system_prompt: system_prompt || null,
       is_active: is_active !== undefined ? is_active : existing.is_active,
       model_name: model_name || null,
+      chat_tool_profile: chat_tool_profile ?? null,
     };
     const result =
       await chatRepository.upsertGlobalAiServiceSetting(settingData);
@@ -761,4 +830,281 @@ router.delete('/ai-service-settings/global/:id', async (req, res, next) => {
     next(error);
   }
 });
+
+/**
+ * @swagger
+ * /admin/external-data-providers/global:
+ *   get:
+ *     summary: Get all global external data providers
+ *     tags: [System & Admin]
+ *     security:
+ *       - cookieAuth: []
+ *     responses:
+ *       200:
+ *         description: List of global external data providers
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden
+ */
+router.get('/external-data-providers/global', async (req, res, next) => {
+  try {
+    const providers =
+      await externalProviderRepository.getGlobalExternalDataProviders();
+    res.status(200).json(providers);
+  } catch (error) {
+    log('error', 'Error fetching global external data providers:', error);
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /admin/external-data-providers/global:
+ *   post:
+ *     summary: Create a new global external data provider
+ *     tags: [System & Admin]
+ *     security:
+ *       - cookieAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               provider_name:
+ *                 type: string
+ *               provider_type:
+ *                 type: string
+ *               app_id:
+ *                 type: string
+ *               app_key:
+ *                 type: string
+ *               base_url:
+ *                 type: string
+ *               is_active:
+ *                 type: boolean
+ *     responses:
+ *       201:
+ *         description: Global external data provider created
+ *       400:
+ *         description: Invalid request
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden
+ */
+router.post('/external-data-providers/global', async (req, res, next) => {
+  try {
+    const bodyResult = CreateGlobalExternalDataProviderBodySchema.safeParse(
+      req.body
+    );
+    if (!bodyResult.success) {
+      return res.status(400).json({
+        error: 'Invalid request body',
+        details: bodyResult.error.flatten().fieldErrors,
+      });
+    }
+    const {
+      provider_name,
+      provider_type,
+      app_id,
+      app_key,
+      base_url,
+      is_active,
+    } = bodyResult.data;
+
+    if (!(await isValidProviderType(provider_type))) {
+      return res
+        .status(400)
+        .json({ error: `Invalid provider_type: '${provider_type}'.` });
+    }
+    const providerData = {
+      provider_name,
+      provider_type,
+      app_id: app_id || null,
+      app_key: app_key || null,
+      base_url: base_url || null,
+      is_active: is_active || false,
+      user_id: req.userId,
+    };
+    const result =
+      await externalProviderRepository.createGlobalExternalDataProvider(
+        providerData
+      );
+
+    await logAdminAction(req.userId, null, 'GLOBAL_PROVIDER_CREATED', {
+      providerId: result.id,
+      providerName: provider_name,
+    });
+    res.status(201).json(result);
+  } catch (error) {
+    log('error', 'Error creating global external data provider:', error);
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /admin/external-data-providers/global/{id}:
+ *   put:
+ *     summary: Update a global external data provider
+ *     tags: [System & Admin]
+ *     security:
+ *       - cookieAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               provider_name:
+ *                 type: string
+ *               provider_type:
+ *                 type: string
+ *               app_id:
+ *                 type: string
+ *               app_key:
+ *                 type: string
+ *               base_url:
+ *                 type: string
+ *               is_active:
+ *                 type: boolean
+ *     responses:
+ *       200:
+ *         description: Global external data provider updated
+ *       400:
+ *         description: Invalid request
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden
+ *       404:
+ *         description: Provider not found
+ */
+router.put('/external-data-providers/global/:id', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const bodyResult = UpdateGlobalExternalDataProviderBodySchema.safeParse(
+      req.body
+    );
+    if (!bodyResult.success) {
+      return res.status(400).json({
+        error: 'Invalid request body',
+        details: bodyResult.error.flatten().fieldErrors,
+      });
+    }
+    const {
+      provider_name,
+      provider_type,
+      app_id,
+      app_key,
+      base_url,
+      is_active,
+    } = bodyResult.data;
+
+    // Only validate provider_type when the caller is changing it.
+    if (
+      provider_type !== undefined &&
+      !(await isValidProviderType(provider_type))
+    ) {
+      return res
+        .status(400)
+        .json({ error: `Invalid provider_type: '${provider_type}'.` });
+    }
+    const updateData = {
+      provider_name,
+      provider_type,
+      app_id: app_id !== undefined ? app_id : undefined,
+      app_key: app_key !== undefined ? app_key : undefined,
+      base_url,
+      is_active,
+    };
+    const result =
+      await externalProviderRepository.updateGlobalExternalDataProvider(
+        id,
+        updateData
+      );
+    if (!result) {
+      return res
+        .status(404)
+        .json({ error: 'Global external data provider not found.' });
+    }
+
+    await logAdminAction(req.userId, null, 'GLOBAL_PROVIDER_UPDATED', {
+      providerId: id,
+      providerName: provider_name || result.provider_name,
+    });
+    res.status(200).json(result);
+  } catch (error) {
+    log(
+      'error',
+      `Error updating global external data provider ${req.params.id}:`,
+      error
+    );
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /admin/external-data-providers/global/{id}:
+ *   delete:
+ *     summary: Delete a global external data provider
+ *     tags: [System & Admin]
+ *     security:
+ *       - cookieAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *     responses:
+ *       200:
+ *         description: Global external data provider deleted
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden
+ *       404:
+ *         description: Provider not found
+ */
+router.delete('/external-data-providers/global/:id', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const success =
+      await externalProviderRepository.deleteGlobalExternalDataProvider(id);
+    if (success) {
+      await logAdminAction(req.userId, null, 'GLOBAL_PROVIDER_DELETED', {
+        providerId: id,
+      });
+      res.status(200).json({
+        message: 'Global external data provider deleted successfully.',
+      });
+    } else {
+      res
+        .status(404)
+        .json({ error: 'Global external data provider not found.' });
+    }
+  } catch (error) {
+    log(
+      'error',
+      `Error deleting global external data provider ${req.params.id}:`,
+      error
+    );
+    next(error);
+  }
+});
+
 export default router;

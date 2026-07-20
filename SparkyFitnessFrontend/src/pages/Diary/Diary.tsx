@@ -1,25 +1,23 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
-import { Button } from '@/components/ui/button';
-import { Calendar } from '@/components/ui/calendar';
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from '@/components/ui/popover';
-import { CalendarIcon, ChevronLeft, ChevronRight } from 'lucide-react';
-import { formatDateToYYYYMMDD } from '@/lib/utils';
 import { useActiveUser } from '@/contexts/ActiveUserContext';
 import { usePreferences } from '@/contexts/PreferencesContext';
-import DiaryTopControls, { DayTotals } from './DiaryTopControls';
+import DayNavigator from '@/components/DayNavigator';
+import NutritionSummaryCard, { DayTotals } from './NutritionSummaryCard';
+import DailyProgress from './DailyProgress';
+import WaterIntake from './WaterIntake';
 import MealCard from './MealCard';
 import ExerciseCard from './ExerciseCard';
+import DiaryWidgetGrid, { type DiaryWidget } from './DiaryWidgetGrid';
+import { mealWidgetKey } from '@/utils/dashboardLayout';
+import { Flame, Salad, Droplet, UtensilsCrossed, Dumbbell } from 'lucide-react';
 import EditFoodEntryDialog from './EditFoodEntryDialog';
 import FoodUnitSelector from '@/components/FoodUnitSelector';
 import CopyFoodEntryDialog from '@/pages/Diary/CopyFoodEntryDialog';
 import ConvertToMealDialog from '@/pages/Diary/ConvertToMealDialog';
 import EditMealFoodEntryDialog from './EditMealFoodEntryDialog';
+import CopyFamilyEntryDialog from '@/pages/Diary/CopyFamilyEntryDialog';
 import LogMealDialog from '@/pages/Diary/LogMealDialog';
 import { debug, info, error } from '@/utils/logging';
 import {
@@ -45,30 +43,24 @@ import {
   useFoodEntries,
   useFoodEntryMeals,
 } from '@/hooks/Diary/useFoodEntries';
+import { todayInZone, prefillEntryTime } from '@workspace/shared';
+import { useDailySummary } from '@/hooks/Diary/useDailyProgress';
 
 const Diary = () => {
   const { t } = useTranslation();
   const { activeUserId } = useActiveUser();
   const location = useLocation();
   const navigate = useNavigate();
-  const {
-    formatDate,
-    formatDateInUserTimezone,
-    parseDateInUserTimezone,
-    loggingLevel,
-    energyUnit,
-    convertEnergy,
-  } = usePreferences();
+  const { timezone, loggingLevel, energyUnit, convertEnergy } =
+    usePreferences();
   const [editingEntry, setEditingEntry] = useState<FoodEntry | null>(null);
   const [editingFoodEntryMeal, setEditingFoodEntryMeal] =
     useState<FoodEntryMeal | null>(null); // State for editing logged meal entry
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [selectedDate, setSelectedDate] = useState(
-    searchParams.get('date') ??
-      formatDateInUserTimezone(new Date(), 'yyyy-MM-dd')
+    searchParams.get('date') ?? todayInZone(timezone)
   );
-  const [date, setDate] = useState(parseDateInUserTimezone(selectedDate));
   debug(loggingLevel, 'FoodDiary component rendered for date:', selectedDate);
   const [exercisesToLogFromPreset, setExercisesToLogFromPreset] = useState<
     PresetExercise[] | undefined
@@ -85,12 +77,17 @@ const Diary = () => {
     useState(false);
   const [convertToMealSourceMealType, setConvertToMealSourceMealType] =
     useState<string>('');
+  const [isCopyFamilyDialogOpen, setIsCopyFamilyDialogOpen] = useState(false);
+  const [copyFamilySourceMealType, setCopyFamilySourceMealType] =
+    useState<string>('');
 
   const [selectedMealType, setSelectedMealType] = useState<string>('');
   const [selectedMealTypeId, setSelectedMealTypeId] = useState<string>('');
   const [openFoodSearchForMealType, setOpenFoodSearchForMealType] = useState<
     string | null
   >(null);
+  const [toolbarContainer, setToolbarContainer] =
+    useState<HTMLDivElement | null>(null);
 
   const currentUserId = activeUserId;
   const { data: customNutrients, isLoading: customNutrientsLoading } =
@@ -98,15 +95,30 @@ const Diary = () => {
   const { data: availableMealTypes, isLoading: mealTypesLoading } =
     useMealTypes();
   const { data: goals, isLoading: goalsLoading } = useDiaryGoals(selectedDate);
+  const { data: summaryData, isLoading: summaryLoading } =
+    useDailySummary(selectedDate);
   const { data: fetchedFoodEntries, isLoading: foodEntriesLoading } =
     useFoodEntries(selectedDate);
   const { data: foodEntryMeals, isLoading: foodEntryMealsLoading } =
     useFoodEntryMeals(selectedDate);
 
+  const effectiveGoals = goals
+    ? summaryData?.adjustedGoals
+      ? {
+          ...goals,
+          calories: summaryData.adjustedGoals.calories,
+          protein: summaryData.adjustedGoals.protein,
+          carbs: summaryData.adjustedGoals.carbs,
+          fat: summaryData.adjustedGoals.fat,
+        }
+      : goals
+    : undefined;
+
   const loading =
     customNutrientsLoading ||
     mealTypesLoading ||
     goalsLoading ||
+    summaryLoading ||
     foodEntriesLoading ||
     foodEntryMealsLoading;
 
@@ -160,6 +172,12 @@ const Diary = () => {
     debug(loggingLevel, 'Opening copy dialog for meal type:', mealType);
   };
 
+  const handleCopyFamilyClick = (mealType: string) => {
+    setCopyFamilySourceMealType(mealType);
+    setIsCopyFamilyDialogOpen(true);
+    debug(loggingLevel, 'Opening family copy dialog for meal type:', mealType);
+  };
+
   const handleCopyFoodEntries = async (
     targetDate: string,
     targetMealType: string
@@ -183,31 +201,6 @@ const Diary = () => {
     } finally {
       setIsCopyDialogOpen(false);
     }
-  };
-
-  const handleDateSelect = (newDate: Date | undefined) => {
-    debug(loggingLevel, 'Handling date select:', newDate);
-    if (newDate) {
-      setDate(newDate);
-      const dateString = formatDateToYYYYMMDD(newDate);
-      info(loggingLevel, 'Date selected:', dateString);
-      setSelectedDate(dateString);
-      setSearchParams({ date: dateString });
-    }
-  };
-
-  const handlePreviousDay = () => {
-    debug(loggingLevel, 'Handling previous day button click.');
-    const previousDay = new Date(date);
-    previousDay.setDate(previousDay.getDate() - 1);
-    handleDateSelect(previousDay);
-  };
-
-  const handleNextDay = () => {
-    debug(loggingLevel, 'Handling next day button click.');
-    const nextDay = new Date(date);
-    nextDay.setDate(nextDay.getDate() + 1);
-    handleDateSelect(nextDay);
   };
 
   const handleFoodSelect = async (item: Food | MealType, mealType: string) => {
@@ -240,7 +233,8 @@ const Diary = () => {
     food: Food,
     quantity: number,
     unit: string,
-    selectedVariant: FoodVariant
+    selectedVariant: FoodVariant,
+    entryTime?: string | null
   ) => {
     if (!currentUserId) {
       return;
@@ -250,6 +244,7 @@ const Diary = () => {
       quantity,
       unit,
       selectedVariant,
+      entryTime,
     });
     try {
       await createFoodEntry({
@@ -261,6 +256,7 @@ const Diary = () => {
         unit: unit,
         variant_id: selectedVariant.id,
         entry_date: selectedDate,
+        entry_time: entryTime || null,
       });
       info(loggingLevel, 'Food entry added successfully.');
     } catch (err) {
@@ -325,136 +321,142 @@ const Diary = () => {
     );
   };
 
-  if (loading) return <div>Loading...</div>;
-  return (
-    <div className="space-y-6">
-      {/* Date Navigation */}
-      <div className="flex justify-center mb-5 gap-2">
-        <Button
-          variant="ghost"
-          size="sm"
-          className="text-xs text-muted-foreground h-9 px-3 rounded-full border border-border/60"
-          onClick={() => handleDateSelect(new Date())}
-        >
-          Today
-        </Button>
-        <div className="flex items-center gap-0 rounded-full border border-border/60 bg-background overflow-hidden">
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={handlePreviousDay}
-            className="h-9 w-9 rounded-none border-r border-border/60"
-          >
-            <ChevronLeft className="h-4 w-4" />
-          </Button>
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button
-                variant="ghost"
-                className="h-9 px-4 rounded-none font-normal text-sm gap-2"
-              >
-                <CalendarIcon className="h-3.5 w-3.5 text-muted-foreground" />
-                {date ? (
-                  formatDate(date)
-                ) : (
-                  <span className="text-muted-foreground">
-                    {t('foodDiary.pickADate', 'Pick a Date')}
-                  </span>
-                )}
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent
-              className="w-auto p-0"
-              align="center"
-              sideOffset={8}
-            >
-              <Calendar
-                mode="single"
-                selected={date}
-                onSelect={handleDateSelect}
-                yearsRange={10}
-              />
-            </PopoverContent>
-          </Popover>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={handleNextDay}
-            className="h-9 w-9 rounded-none border-l border-border/60"
-          >
-            <ChevronRight className="h-4 w-4" />
-          </Button>
-        </div>
-      </div>
+  const visibleMealTypes = useMemo(
+    () => (availableMealTypes ?? []).filter((meal) => meal.is_visible),
+    [availableMealTypes]
+  );
 
-      {/* Top Controls Section */}
-      {goals && (
-        <>
-          <DiaryTopControls
+  // Build the ordered widget registry: energy, nutrition, water, one card per
+  // visible meal type, then exercise. Keys match buildWidgetKeys() so the saved
+  // grid layout reconciles cleanly against the user's current meal types.
+  const widgets: DiaryWidget[] = useMemo(() => {
+    if (!effectiveGoals) return [];
+    const list: DiaryWidget[] = [
+      {
+        key: 'energy',
+        title: t('diary.dailyEnergyGoal', 'Daily Energy Goal'),
+        icon: Flame,
+        render: () => <DailyProgress selectedDate={selectedDate} />,
+      },
+      {
+        key: 'nutrition',
+        title: t('diary.nutritionSummary', 'Nutrition Summary'),
+        icon: Salad,
+        render: () => (
+          <NutritionSummaryCard
             selectedDate={selectedDate}
             dayTotals={dayTotals as unknown as DayTotals}
-            goals={goals}
+            goals={effectiveGoals}
             energyUnit={energyUnit}
             convertEnergy={convertEnergy}
             customNutrients={customNutrients}
           />
+        ),
+      },
+      {
+        key: 'water',
+        title: t('diary.waterIntake', 'Water Intake'),
+        icon: Droplet,
+        render: () => <WaterIntake selectedDate={selectedDate} />,
+      },
+    ];
 
-          <div className="space-y-6">
-            {availableMealTypes?.length === 0 && (
-              <div className="text-center p-4 text-muted-foreground">
-                Loading meal types...
-              </div>
+    for (const mealTypeObj of visibleMealTypes) {
+      list.push({
+        key: mealWidgetKey(mealTypeObj.id),
+        title: mealTypeObj.name,
+        icon: UtensilsCrossed,
+        render: () => (
+          <MealCard
+            meal={{
+              ...getMealData(
+                mealTypeObj.name,
+                foodEntries,
+                foodEntryMeals ?? [],
+                effectiveGoals
+              ),
+              selectedDate: selectedDate,
+            }}
+            totals={getMealTotals(
+              mealTypeObj.name,
+              foodEntries,
+              foodEntryMeals ?? []
             )}
+            onFoodSelect={handleFoodSelect}
+            onEditEntry={handleEditEntry}
+            selectedDate={selectedDate}
+            onRemoveEntry={(itemId, itemType) =>
+              handleRemoveEntry(itemId, itemType)
+            }
+            getEntryNutrition={getEntryNutrition}
+            onCopyClick={handleCopyClick}
+            onCopyFamilyClick={handleCopyFamilyClick}
+            onConvertToMealClick={handleConvertToMealClick}
+            energyUnit={energyUnit}
+            convertEnergy={convertEnergy}
+            customNutrients={customNutrients}
+            shouldOpenFoodSearch={
+              openFoodSearchForMealType?.toLowerCase() ===
+              mealTypeObj.name.toLowerCase()
+            }
+            onFoodSearchClose={() => setOpenFoodSearchForMealType(null)}
+          />
+        ),
+      });
+    }
 
-            {(availableMealTypes ?? [])
-              .filter((meal) => meal.is_visible)
-              .map((mealTypeObj) => (
-                <MealCard
-                  key={mealTypeObj.id}
-                  meal={{
-                    ...getMealData(
-                      mealTypeObj.name,
-                      foodEntries,
-                      foodEntryMeals ?? [],
-                      goals
-                    ),
-                    selectedDate: selectedDate,
-                  }}
-                  totals={getMealTotals(
-                    mealTypeObj.name,
-                    foodEntries,
-                    foodEntryMeals ?? []
-                  )}
-                  onFoodSelect={handleFoodSelect}
-                  onEditEntry={handleEditEntry}
-                  selectedDate={selectedDate}
-                  onRemoveEntry={(itemId, itemType) =>
-                    handleRemoveEntry(itemId, itemType)
-                  }
-                  getEntryNutrition={getEntryNutrition}
-                  onCopyClick={handleCopyClick}
-                  onConvertToMealClick={handleConvertToMealClick}
-                  energyUnit={energyUnit}
-                  convertEnergy={convertEnergy}
-                  customNutrients={customNutrients}
-                  shouldOpenFoodSearch={
-                    openFoodSearchForMealType?.toLowerCase() ===
-                    mealTypeObj.name.toLowerCase()
-                  }
-                  onFoodSearchClose={() => setOpenFoodSearchForMealType(null)}
-                />
-              ))}
+    list.push({
+      key: 'exercise',
+      title: t('diary.exercise', 'Exercise'),
+      icon: Dumbbell,
+      render: () => (
+        <ExerciseCard
+          selectedDate={selectedDate}
+          initialExercisesToLog={exercisesToLogFromPreset}
+          onExercisesLogged={() => setExercisesToLogFromPreset(undefined)}
+        />
+      ),
+    });
 
-            {/* Exercise Section */}
-            <ExerciseCard
-              selectedDate={selectedDate}
-              initialExercisesToLog={exercisesToLogFromPreset}
-              onExercisesLogged={() => setExercisesToLogFromPreset(undefined)}
-            />
-          </div>
+    return list;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    effectiveGoals,
+    visibleMealTypes,
+    selectedDate,
+    dayTotals,
+    foodEntries,
+    foodEntryMeals,
+    energyUnit,
+    customNutrients,
+    exercisesToLogFromPreset,
+    openFoodSearchForMealType,
+    t,
+  ]);
 
-          {/* Main Content - Meals and Exercise */}
-        </>
+  if (loading) return <div>Loading...</div>;
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-2 border-b">
+        <div />
+        <div className="flex items-center gap-2 sm:ml-auto">
+          <div ref={setToolbarContainer} className="flex items-center gap-2" />
+          <DayNavigator
+            selectedDate={selectedDate}
+            onDateChange={(dateString) => {
+              setSelectedDate(dateString);
+              setSearchParams({ date: dateString });
+            }}
+            className="grid-cols-none flex mb-0 items-center gap-2"
+          />
+        </div>
+      </div>
+
+      {effectiveGoals && (
+        <DiaryWidgetGrid
+          widgets={widgets}
+          toolbarContainer={toolbarContainer}
+        />
       )}
 
       {/* Food Unit Selector Dialog */}
@@ -465,6 +467,19 @@ const Diary = () => {
           onOpenChange={setIsUnitSelectorOpen}
           onSelect={handleFoodUnitSelect}
           showUnitSelector={true}
+          showTimeInput={true}
+          defaultMealTime={
+            availableMealTypes?.find(
+              (t) => t.name.toLowerCase() === selectedMealType.toLowerCase()
+            )?.default_time
+          }
+          initialTime={prefillEntryTime({
+            defaultTime: availableMealTypes?.find(
+              (t) => t.name.toLowerCase() === selectedMealType.toLowerCase()
+            )?.default_time,
+            isToday: selectedDate === todayInZone(timezone),
+            tz: timezone,
+          })}
         />
       )}
 
@@ -504,6 +519,13 @@ const Diary = () => {
         onOpenChange={setIsLogMealDialogOpen}
         date={selectedDate}
         mealType={selectedMealType}
+        initialEntryTime={prefillEntryTime({
+          defaultTime: availableMealTypes?.find(
+            (t) => t.name.toLowerCase() === selectedMealType.toLowerCase()
+          )?.default_time,
+          isToday: selectedDate === todayInZone(timezone),
+          tz: timezone,
+        })}
       />
 
       {/* Convert to Meal Dialog */}
@@ -513,6 +535,16 @@ const Diary = () => {
           onClose={() => setIsConvertToMealDialogOpen(false)}
           selectedDate={selectedDate}
           mealType={convertToMealSourceMealType}
+        />
+      )}
+
+      {/* Copy Family Entry Dialog */}
+      {isCopyFamilyDialogOpen && (
+        <CopyFamilyEntryDialog
+          isOpen={isCopyFamilyDialogOpen}
+          onClose={() => setIsCopyFamilyDialogOpen(false)}
+          sourceMealType={copyFamilySourceMealType}
+          currentDate={selectedDate}
         />
       )}
     </div>

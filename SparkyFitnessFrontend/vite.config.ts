@@ -3,12 +3,20 @@ import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import path from 'path';
 import { VitePWA } from 'vite-plugin-pwa';
+import { reactClickToComponent } from 'vite-plugin-react-click-to-component';
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => {
   const backendHost = process.env.VITE_BACKEND_HOST || 'localhost';
   const target = `http://${backendHost}:3010`;
   return {
+    // react-grid-layout reads process.env["NODE_ENV"] at runtime, but the
+    // browser has no `process`. Shim just the env object so it resolves in both
+    // dev and the production/Docker build (where mode === 'production'). Client
+    // code here uses import.meta.env, so nothing else is affected.
+    define: {
+      'process.env': JSON.stringify({ NODE_ENV: mode }),
+    },
     server: {
       host: '::',
       port: 8080,
@@ -18,20 +26,35 @@ export default defineConfig(({ mode }) => {
           target: target,
           changeOrigin: true,
           rewrite: (path) => `/api${path}`, // Add /api/ prefix
+          timeout: 120000,
+          proxyTimeout: 120000,
         },
         '/api': {
           target: target,
           changeOrigin: true,
+          timeout: 120000,
+          proxyTimeout: 120000,
+        },
+        '/mcp': {
+          target: target,
+          changeOrigin: true,
+          timeout: 120000,
+          proxyTimeout: 120000,
         },
         '/uploads': {
           target: target,
           changeOrigin: true,
+          timeout: 120000,
+          proxyTimeout: 120000,
         },
       },
     },
     plugins: [
       tailwindcss(),
       react(),
+      // Option+Right Click any element in dev to open its source in your editor.
+      // Self-guards to `command === 'serve'`, so it's a no-op in production builds.
+      reactClickToComponent(),
       // Temporarily disabled for development to debug refresh issue
       // mode === "production" && VitePWA({...})
       mode === 'production' &&

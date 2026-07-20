@@ -109,10 +109,14 @@ export interface FoodInfoItem {
   name: string;
   brand: string | null;
   barcode?: string | null;
+  provider_type?: string;
+  provider_external_id?: string;
+  is_custom?: boolean;
   userId?: string;
   sharedWithPublic?: boolean;
   servingSize: number;
   servingUnit: string;
+  servingDescription?: string;
   calories: number;
   protein: number;
   carbs: number;
@@ -131,6 +135,7 @@ export interface FoodInfoItem {
   customNutrients?: Record<string, string | number> | null;
   variantId?: string;
   externalVariants?: ExternalFoodVariant[];
+  provider_verified?: boolean;
   // Yield count for meal-source items — surfaces "meal makes N servings"
   // context in the diary-add screen for serving-unit meals where the
   // per-serving size suffix is suppressed.
@@ -152,6 +157,9 @@ export const foodItemToFoodInfo = (item: FoodItem | TopFoodItem ): FoodInfoItem 
   barcode: item.barcode ?? null,
   userId: item.user_id,
   sharedWithPublic: item.shared_with_public,
+  provider_type: item.provider_type ?? undefined,
+  provider_external_id: item.provider_external_id ?? undefined,
+  provider_verified: item.provider_verified,
   servingSize: item.default_variant.serving_size,
   servingUnit: item.default_variant.serving_unit,
   calories: item.default_variant.calories,
@@ -179,8 +187,13 @@ export const externalFoodItemToFoodInfo = (item: ExternalFoodItem): FoodInfoItem
   id: item.id,
   name: item.name,
   brand: item.brand,
+  barcode: item.barcode ?? null,
+  provider_type: item.provider_type,
+  provider_external_id: item.provider_external_id,
+  is_custom: item.is_custom,
   servingSize: item.serving_size,
   servingUnit: item.serving_unit,
+  servingDescription: item.serving_description,
   calories: item.calories,
   protein: item.protein,
   carbs: item.carbs,
@@ -197,6 +210,7 @@ export const externalFoodItemToFoodInfo = (item: ExternalFoodItem): FoodInfoItem
   vitaminA: item.vitamin_a,
   vitaminC: item.vitamin_c,
   externalVariants: item.variants,
+  provider_verified: item.provider_verified,
   source: 'external',
   originalItem: item,
 });
@@ -263,7 +277,7 @@ export const mealIngredientDraftToFoodInfo = (
     'serving';
 
   return {
-    id: ingredient.food_id,
+    id: ingredient.food_id || '',
     name: ingredient.food_name || 'Food',
     brand: ingredient.brand,
     servingSize: toFiniteNumber(ingredient.serving_size),

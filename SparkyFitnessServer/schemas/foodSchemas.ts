@@ -5,9 +5,6 @@ export const FoodVariantSchema = z.object({
   user_id: z.string().optional(),
   serving_size: z.number(),
   serving_unit: z.string(),
-  serving_description: z.string().optional(),
-  serving_weight: z.number().optional(),
-  serving_weight_unit: z.string().optional(),
   calories: z.number(),
   protein: z.number(),
   carbs: z.number(),
@@ -30,6 +27,15 @@ export const FoodVariantSchema = z.object({
   custom_nutrients: z
     .record(z.string(), z.union([z.string(), z.number()]))
     .optional(),
+  // Every nutrient field the provider reported for this food, keyed by the
+  // provider's EXACT label (e.g. "Magnesium, Mg"). Surfaced to the client so
+  // users can see what a provider calls each nutrient and add it as a custom
+  // nutrient alias. Transient/import-only; never persisted.
+  provider_nutrients: z.record(z.string(), z.number()).optional(),
+  // Unit per provider field (same label keys as provider_nutrients), for
+  // providers that report units (USDA, OFF). Used to prefill a custom
+  // nutrient's unit. Import-only; never persisted.
+  provider_nutrient_units: z.record(z.string(), z.string()).optional(),
   source: z.enum(['manual', 'ai_estimate', 'imported']).optional(),
   ai_confidence: z.enum(['high', 'medium', 'low']).nullable().optional(),
   allergens: z.array(z.string()).nullable().optional(),
@@ -54,9 +60,15 @@ export const NormalizedFoodSchema = z.object({
 export type NormalizedFood = z.infer<typeof NormalizedFoodSchema>;
 
 export const PaginationSchema = z.object({
-  page: z.number(),
-  pageSize: z.number(),
-  totalCount: z.number(),
+  // Some providers (e.g. Open Food Facts' legacy cgi/search.pl endpoint) report
+  // these pagination values as strings, and the same field can switch between a
+  // string and a number across requests. Coerce them so any provider that sends
+  // string-typed numeric pagination is normalized rather than failing response
+  // validation. `.int()` makes the integer intent explicit and rejects
+  // non-integer floats (e.g. "1.5"). `hasMore` stays a strict boolean.
+  page: z.coerce.number().int(),
+  pageSize: z.coerce.number().int(),
+  totalCount: z.coerce.number().int(),
   hasMore: z.boolean(),
 });
 

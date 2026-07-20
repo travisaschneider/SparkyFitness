@@ -4,6 +4,7 @@ import { normalizeUrl } from './apiClient';
 import { ApiError } from './errors';
 import { getAuthHeaders, notifySessionExpired } from './authService';
 import { ensureTimezoneBootstrapped } from './preferencesApi';
+import { CONNECTION_CHECK_TIMEOUT_MS, fetchWithTimeout } from '../../utils/concurrency';
 import type { SleepStageEvent } from '../../types/mobileHealthData';
 
 interface BaseHealthDataPayloadItem {
@@ -47,6 +48,32 @@ export interface HealthDataPayloadItem extends BaseHealthDataPayloadItem {
 
 export type HealthDataPayload = HealthDataPayloadItem[];
 
+/** Per-record rejection reported by the server for an otherwise-accepted sync request. */
+export interface RecordSyncError {
+  error: string;
+  entry?: unknown;
+}
+
+/**
+ * Outcome of a chunked health-data upload. Per-record rejections are reported
+ * here instead of thrown so the sync cursor can advance past poison records;
+ * only whole-request failures (network, auth, all-records-rejected chunks)
+ * throw.
+ */
+export interface HealthDataSyncSummary {
+  /** Records transmitted in chunks the server accepted (including partially rejected ones). */
+  recordsSent: number;
+  /** Per-record rejections aggregated across all chunks. */
+  recordErrors: RecordSyncError[];
+}
+
+/** Shape of the server's POST /api/health-data response body (fields absent on old servers). */
+interface HealthDataResponseBody {
+  processed?: unknown[];
+  errors?: RecordSyncError[];
+  skipped?: { reason?: string; entry?: unknown }[];
+}
+
 // --- Chunking, timeout, and retry constants ---
 
 export const CHUNK_SIZE = 5_000;
@@ -60,30 +87,6 @@ export const RETRY_BASE_DELAY_MS = 1_000;
 // --- Internal helpers ---
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-/**
- * Wraps fetch with an AbortController that auto-aborts after timeoutMs.
- */
-export const fetchWithTimeout = async (
-  url: string,
-  options: RequestInit,
-  timeoutMs: number,
-): Promise<Response> => {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    const response = await fetch(url, { ...options, signal: controller.signal });
-    return response;
-  } catch (error) {
-    if (error instanceof Error && error.name === 'AbortError') {
-      throw new Error(`Request timed out after ${timeoutMs}ms`);
-    }
-    throw error;
-  } finally {
-    clearTimeout(timer);
-  }
-};
 
 interface RetryConfig {
   timeoutMs: number;
@@ -144,12 +147,44 @@ export const fetchWithRetry = async (
   throw lastError ?? new Error('All retry attempts failed');
 };
 
-// Exercise/Workout use server-side delete-then-insert per source (range-delete
-// [min..max], then re-insert), so a source's sessions must stay in one request:
-// splitting across overlapping date ranges lets a later range-delete wipe an
-// earlier insert. Sleep is excluded — since #1180 the server merges it by natural
-// key (no range delete), so it can be chunked freely.
+// Exercise/Workout use server-side delete-then-insert per source (delete that
+// source's rows for the affected days, then re-insert), so a source's records
+// must stay in one request: splitting across overlapping date ranges lets a later
+// chunk's pre-cleanup wipe an earlier chunk's inserts.
 const RANGE_DELETE_TYPES = new Set(['ExerciseSession', 'Workout']);
+
+// Types the server ingests idempotently by natural key (no range-delete), so they
+// can be chunked freely — but each record is expensive to process server-side
+// (multiple queries / merges), so they're capped at SESSION_CHUNK_SIZE rather than
+// the much larger simple-measurement CHUNK_SIZE. Sleep merges by key (#1180);
+// Nutrition upserts each food entry by (source, source_id).
+const SMALL_CHUNK_TYPES = new Set(['SleepSession', 'Nutrition']);
+
+// Old servers (pre per-record contract) 400 the whole batch when any record
+// fails, but only after processing the valid ones. A 400 whose body carries
+// per-record results with at least one processed record is that legacy partial
+// success. A 400 with no processed records (all rejected, or a malformed-body
+// {error} shape) stays a real failure.
+const parseLegacyPartialFailure = (error: unknown): RecordSyncError[] | null => {
+  if (!(error instanceof ApiError) || error.statusCode !== 400 || !error.body) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(error.body);
+    if (
+      parsed &&
+      typeof parsed === 'object' &&
+      Array.isArray(parsed.errors) &&
+      Array.isArray(parsed.processed) &&
+      parsed.processed.length > 0
+    ) {
+      return parsed.errors as RecordSyncError[];
+    }
+  } catch {
+    // body wasn't JSON — not a legacy partial-failure response
+  }
+  return null;
+};
 
 /** Splits the payload into request-sized chunks (see RANGE_DELETE_TYPES). */
 const sendHealthDataChunked = async (
@@ -157,14 +192,14 @@ const sendHealthDataChunked = async (
   headers: Record<string, string>,
   data: HealthDataPayload,
   serverConfig: ServerConfig,
-): Promise<unknown> => {
+): Promise<HealthDataSyncSummary> => {
   const simpleRecords: HealthDataPayloadItem[] = [];
-  const sleepRecords: HealthDataPayloadItem[] = [];
+  const smallChunkRecords: HealthDataPayloadItem[] = [];
   const rangeDeleteBySource = new Map<string, HealthDataPayloadItem[]>();
 
   for (const record of data) {
-    if (record.type === 'SleepSession') {
-      sleepRecords.push(record);
+    if (SMALL_CHUNK_TYPES.has(record.type)) {
+      smallChunkRecords.push(record);
     } else if (RANGE_DELETE_TYPES.has(record.type)) {
       const source = (record as unknown as Record<string, unknown>).source as string ?? 'manual';
       const group = rangeDeleteBySource.get(source);
@@ -185,9 +220,9 @@ const sendHealthDataChunked = async (
     chunks.push(sessionRecords);
   }
 
-  // Sleep: chunked by SESSION_CHUNK_SIZE.
-  for (let i = 0; i < sleepRecords.length; i += SESSION_CHUNK_SIZE) {
-    chunks.push(sleepRecords.slice(i, i + SESSION_CHUNK_SIZE));
+  // Sleep/Nutrition: chunked by SESSION_CHUNK_SIZE.
+  for (let i = 0; i < smallChunkRecords.length; i += SESSION_CHUNK_SIZE) {
+    chunks.push(smallChunkRecords.slice(i, i + SESSION_CHUNK_SIZE));
   }
 
   // Simple measurements: chunked by CHUNK_SIZE.
@@ -197,7 +232,7 @@ const sendHealthDataChunked = async (
 
   const totalChunks = chunks.length;
   let recordsSent = 0;
-  let lastResult: unknown;
+  const recordErrors: RecordSyncError[] = [];
 
   for (let i = 0; i < totalChunks; i++) {
     const chunk = chunks[i];
@@ -227,9 +262,45 @@ const sendHealthDataChunked = async (
         },
       );
 
-      lastResult = await response.json();
+      const result = (await response.json()) as HealthDataResponseBody | null;
+      // Old servers omit errors/skipped — treat as clean.
+      const chunkErrors = Array.isArray(result?.errors) ? result.errors : [];
+      const chunkProcessed = Array.isArray(result?.processed) ? result.processed : [];
+      const chunkSkipped = Array.isArray(result?.skipped) ? result.skipped : [];
+
+      if (chunkSkipped.length > 0) {
+        addLog(
+          `[API] Server skipped ${chunkSkipped.length} record(s) in chunk ${i + 1}/${totalChunks} (intentionally not written)`,
+          'INFO',
+        );
+      }
+
+      // A chunk where every record was rejected is indistinguishable from a
+      // systemic failure — advancing the cursor there would silently drop the
+      // whole window, so treat it like a failed chunk.
+      if (chunkErrors.length > 0 && chunkProcessed.length === 0) {
+        addLog(
+          `[API] chunk ${i + 1}/${totalChunks} rejected in full by server: ${chunkErrors.length} records`,
+          'ERROR',
+        );
+        throw new Error(
+          `Chunk ${i + 1}/${totalChunks} rejected in full by server: ${chunkErrors.length} records rejected.`,
+        );
+      }
+
+      recordErrors.push(...chunkErrors);
       recordsSent += chunk.length;
     } catch (error) {
+      const legacyErrors = parseLegacyPartialFailure(error);
+      if (legacyErrors) {
+        addLog(
+          `[API] Legacy server reported ${legacyErrors.length} rejected record(s) in chunk ${i + 1}/${totalChunks}; continuing`,
+          'WARNING',
+        );
+        recordErrors.push(...legacyErrors);
+        recordsSent += chunk.length;
+        continue;
+      }
       const message = error instanceof Error ? error.message : String(error);
       if (recordsSent > 0) {
         throw new Error(
@@ -240,13 +311,17 @@ const sendHealthDataChunked = async (
     }
   }
 
-  return lastResult;
+  return { recordsSent, recordErrors };
 };
 
 /**
- * Sends health data to the server.
+ * Sends health data to the server. Resolves with a summary whose recordErrors
+ * carry per-record server rejections; callers must not treat those as a failed
+ * sync (see HealthDataSyncSummary).
  */
-export const syncHealthData = async (data: HealthDataPayload): Promise<unknown> => {
+export const syncHealthData = async (
+  data: HealthDataPayload,
+): Promise<HealthDataSyncSummary | undefined> => {
   const config = await getActiveServerConfig();
   if (!config) {
     throw new Error('Server configuration not found.');
@@ -270,7 +345,7 @@ export const syncHealthData = async (data: HealthDataPayload): Promise<unknown> 
   addLog(`[API] Starting sync of ${data.length} records to server`, 'INFO');
 
   try {
-    const result = await sendHealthDataChunked(
+    const summary = await sendHealthDataChunked(
       `${url}/api/health-data`,
       {
         'Content-Type': 'application/json',
@@ -281,8 +356,16 @@ export const syncHealthData = async (data: HealthDataPayload): Promise<unknown> 
       config,
     );
 
-    addLog(`[API] Sync successful: ${data.length} records sent to server`, 'INFO');
-    return result;
+    if (summary.recordErrors.length > 0) {
+      addLog(
+        `[API] Sync sent ${summary.recordsSent} records; server rejected ${summary.recordErrors.length} record(s)`,
+        'WARNING',
+        summary.recordErrors.slice(0, 10).map((e) => e.error),
+      );
+    } else {
+      addLog(`[API] Sync successful: ${data.length} records sent to server`, 'INFO');
+    }
+    return summary;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     addLog(`[API] Sync failed: ${message}`, 'ERROR');
@@ -308,14 +391,18 @@ export const checkServerConnection = async (): Promise<boolean> => {
   }
 
   try {
-    const response = await fetch(`${url}/api/identity/user`, {
-      method: 'GET',
-      cache: 'no-store', // skip native HTTP cache to avoid 304 empty bodies (#1353)
-      headers: {
-        ...proxyHeadersToRecord(config.proxyHeaders),
-        ...getAuthHeaders(config),
+    const response = await fetchWithTimeout(
+      `${url}/api/identity/user`,
+      {
+        method: 'GET',
+        cache: 'no-store', // skip native HTTP cache to avoid 304 empty bodies (#1353)
+        headers: {
+          ...proxyHeadersToRecord(config.proxyHeaders),
+          ...getAuthHeaders(config),
+        },
       },
-    });
+      CONNECTION_CHECK_TIMEOUT_MS,
+    );
     if (response.ok) {
       return true;
     } else {

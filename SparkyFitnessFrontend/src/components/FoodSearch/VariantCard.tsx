@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
@@ -29,6 +29,7 @@ import { NutrientGrid } from './NutrientFormGrid';
 import { AiEstimateSection } from '@/components/FoodUnitSelector/AiEstimateSection';
 import type { AiEstimateData } from '@/hooks/Foods/useUnitConversion';
 import { NumericInput } from '../NumericInput';
+import { formatServingLabel } from '@/utils/foodServing';
 
 // Tone classes for the AI provenance badge ("Good/Fair/Rough estimate").
 // `green` (true grass-green, hue ~142°) replaces `emerald` (~160°,
@@ -146,8 +147,34 @@ export function VariantCard({
   onDuplicate,
   onRemove,
 }: VariantCardProps) {
-  const equivalents = variant.equivalents ?? [];
+  const equivalents = useMemo(
+    () => variant.equivalents ?? [],
+    [variant.equivalents]
+  );
   const [allergenInput, setAllergenInput] = useState('');
+
+  const customUnitsForDropdown = useMemo(() => {
+    const standardUnits = new Set(UNIT_GROUPS.flatMap((group) => group.units));
+    const custom = new Set<string>();
+
+    const checkAndAdd = (unit: string | undefined | null) => {
+      if (unit && !standardUnits.has(unit)) {
+        custom.add(unit);
+      }
+    };
+
+    checkAndAdd(variant.serving_unit);
+    equivalents.forEach((eq) => checkAndAdd(eq.serving_unit));
+
+    if (_defaultVariant) {
+      checkAndAdd(_defaultVariant.serving_unit);
+      _defaultVariant.equivalents?.forEach((eq) =>
+        checkAndAdd(eq.serving_unit)
+      );
+    }
+
+    return Array.from(custom);
+  }, [variant.serving_unit, equivalents, _defaultVariant]);
 
   const currentAllergens: string[] = variant.allergens ?? [];
 
@@ -227,7 +254,7 @@ export function VariantCard({
               <Label htmlFor={`serving-size-${index}`}>Serving Size</Label>
               <NumericInput
                 id={`serving-size-${index}`}
-                step="0.1"
+                step="any"
                 value={
                   variant.serving_size !== undefined
                     ? variant.serving_size
@@ -260,19 +287,9 @@ export function VariantCard({
                     <SelectGroup key={group.label}>
                       <SelectLabel>{group.label}</SelectLabel>
                       {group.units.map((unit) => {
-                        // AI rows never advertise compatible-unit checkmarks
-                        // — once a unit is AI-estimated for a food, sibling
-                        // units in the same category should be AI-estimated
-                        // too (not math-derived from the AI value). Keeps the
-                        // "what's real vs AI" line clear for the user.
                         const compatible =
                           showCompatibleUnitIndicators &&
                           compatibleUnits.includes(unit);
-                        // Cross-row AI marker: any unit that has a SAVED AI
-                        // variant on this food shows the sparkle inside the
-                        // option — even in OTHER rows' dropdowns. So opening
-                        // the default `g` row's dropdown still flags `cup`
-                        // if another row saved cup as an AI variant.
                         const matchedAi = savedAiUnits?.find(
                           (entry) => entry.unit === unit
                         );
@@ -302,6 +319,42 @@ export function VariantCard({
                       })}
                     </SelectGroup>
                   ))}
+                  {customUnitsForDropdown.length > 0 && (
+                    <SelectGroup key="custom-units">
+                      <SelectLabel>Custom</SelectLabel>
+                      {customUnitsForDropdown.map((unit) => {
+                        const compatible =
+                          showCompatibleUnitIndicators &&
+                          compatibleUnits.includes(unit);
+                        const matchedAi = savedAiUnits?.find(
+                          (entry) => entry.unit === unit
+                        );
+                        const showCompatibilityCheck = compatible && !matchedAi;
+                        return (
+                          <SelectItem key={unit} value={unit}>
+                            <span className="flex items-center gap-1.5">
+                              {unit}
+                              {showCompatibilityCheck && (
+                                <Check
+                                  data-testid={`compatible-unit-option-${index}-${unit}`}
+                                  className="h-3 w-3 text-green-500"
+                                />
+                              )}
+                              {matchedAi && (
+                                <Sparkles
+                                  data-testid={`ai-unit-option-indicator-${index}-${unit}`}
+                                  className={`h-3 w-3 ${AI_SPARKLE_TONE_CLASSES[CONFIDENCE_TONES[matchedAi.confidence]]}`}
+                                  aria-label={`AI estimate (${OVERALL_CONFIDENCE_LABELS[matchedAi.confidence]} confidence)`}
+                                  fill="currentColor"
+                                  strokeWidth={0.75}
+                                />
+                              )}
+                            </span>
+                          </SelectItem>
+                        );
+                      })}
+                    </SelectGroup>
+                  )}
                 </SelectContent>
               </Select>
             </div>
@@ -383,7 +436,7 @@ export function VariantCard({
               <Input
                 id={`eq-size-${index}-${eqIndex}`}
                 type="number"
-                step="0.1"
+                step="any"
                 value={eq.serving_size}
                 onChange={(e) =>
                   updateEquivalent(
@@ -420,6 +473,16 @@ export function VariantCard({
                       ))}
                     </SelectGroup>
                   ))}
+                  {customUnitsForDropdown.length > 0 && (
+                    <SelectGroup key="custom-units">
+                      <SelectLabel>Custom</SelectLabel>
+                      {customUnitsForDropdown.map((unit) => (
+                        <SelectItem key={unit} value={unit}>
+                          {unit}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  )}
                 </SelectContent>
               </Select>
             </div>
@@ -451,9 +514,7 @@ export function VariantCard({
       )}
 
       <h4 className="text-md font-medium mb-2 flex items-center gap-2">
-        <span>
-          Nutrition per {variant.serving_size} {variant.serving_unit}
-        </span>
+        <span>Nutrition per {formatServingLabel(variant)}</span>
         {showAiEstimateBadge && (
           <span
             className={`inline-flex items-center rounded px-2 py-0.5 text-xs font-semibold ${AI_BADGE_TONE_CLASSES[CONFIDENCE_TONES[variant.ai_confidence as AiConfidence]]}`}

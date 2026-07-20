@@ -9,7 +9,7 @@ jest.mock('../../src/services/api/externalFoodSearchApi', () => ({
   searchExternalFoods: jest.fn(),
 }));
 
-const mockSearchExternalFoods = searchExternalFoods as jest.MockedFunction<typeof searchExternalFoods>;
+const mockSearchExternalFoods = jest.mocked(searchExternalFoods);
 
 function makePaginatedResult(
   items: PaginatedExternalFoodSearchResult['items'],
@@ -398,6 +398,45 @@ describe('useExternalFoodSearch', () => {
     );
 
     expect(result.current.isProviderSupported).toBe(true);
+  });
+
+  test('reports swissfood as a supported provider', () => {
+    const { result } = renderHook(
+      () => useExternalFoodSearch('chicken', 'swissfood'),
+      { wrapper: createQueryWrapper(queryClient) },
+    );
+
+    expect(result.current.isProviderSupported).toBe(true);
+  });
+
+  test('fetches for swissfood provider type without providerId', async () => {
+    mockSearchExternalFoods.mockResolvedValue(
+      makePaginatedResult([
+        {
+          id: 'swiss-1',
+          name: 'Swiss Cheese',
+          brand: 'Swiss Food Composition Database',
+          calories: 380,
+          protein: 27,
+          carbs: 1,
+          fat: 31,
+          serving_size: 100,
+          serving_unit: 'g',
+          source: 'swissfood',
+        },
+      ]),
+    );
+
+    const { result } = renderHook(
+      () => useExternalFoodSearch('cheese', 'swissfood'),
+      { wrapper: createQueryWrapper(queryClient) },
+    );
+
+    await waitFor(() => {
+      expect(mockSearchExternalFoods).toHaveBeenCalledWith('swissfood', 'cheese', 1, undefined, undefined);
+      expect(result.current.searchResults).toHaveLength(1);
+      expect(result.current.searchResults[0].source).toBe('swissfood');
+    });
   });
 
   describe('query key', () => {

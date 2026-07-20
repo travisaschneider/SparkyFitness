@@ -47,10 +47,24 @@ jest.mock('@kingstinct/react-native-healthkit', () => ({
   queryQuantitySamples: jest.fn(),
   queryCategorySamples: jest.fn(),
   queryStatisticsForQuantity: jest.fn(),
+  queryStatisticsCollectionForQuantity: jest.fn().mockResolvedValue([]),
   queryWorkoutSamples: jest.fn(),
-  saveQuantitySample: jest.fn().mockResolvedValue(true),
-  saveCategorySample: jest.fn().mockResolvedValue(true),
+  queryCorrelationSamples: jest.fn(),
+  // Writeback saves return the persisted sample (orchestrator reads .uuid off it);
+  // a bare `true` would make UUID-tracking assertions silently test nothing.
+  saveQuantitySample: jest.fn().mockResolvedValue({ uuid: 'hk-quantity-uuid' }),
+  saveCategorySample: jest.fn().mockResolvedValue({ uuid: 'hk-category-uuid' }),
+  saveCorrelationSample: jest.fn().mockResolvedValue({
+    uuid: 'hk-correlation-uuid',
+    objects: [{ uuid: 'hk-object-uuid', quantityType: 'HKQuantityTypeIdentifierDietaryEnergyConsumed' }],
+  }),
   saveWorkoutSample: jest.fn().mockResolvedValue({}),
+  deleteObjects: jest.fn().mockResolvedValue(0),
+  // Default sharingAuthorized (2) so unrelated suites touching the healthkit module
+  // don't change behavior; the writeback partial-auth test overrides per-type.
+  authorizationStatusFor: jest.fn(() => 2),
+  currentAppSource: jest.fn(() => ({ bundleIdentifier: 'com.sparkyfitness.mobile', name: 'SparkyFitness' })),
+  AuthorizationStatus: { notDetermined: 0, sharingDenied: 1, sharingAuthorized: 2 },
   HKQuantityTypeIdentifier: {
     stepCount: 'HKQuantityTypeIdentifierStepCount',
     activeEnergyBurned: 'HKQuantityTypeIdentifierActiveEnergyBurned',
@@ -75,6 +89,7 @@ jest.mock('react-native-health-connect', () => ({
   requestPermission: jest.fn().mockResolvedValue([]),
   readRecords: jest.fn().mockResolvedValue({ records: [] }),
   aggregateRecord: jest.fn().mockResolvedValue({}),
+  aggregateGroupByDuration: jest.fn().mockResolvedValue([]),
   aggregateGroupByPeriod: jest.fn().mockResolvedValue([]),
   getSdkStatus: jest.fn().mockResolvedValue(3),
   SdkAvailabilityStatus: {
@@ -110,6 +125,11 @@ jest.mock('expo-notifications', () => {
     requestPermissionsAsync: jest.fn().mockResolvedValue({ status: 'granted' }),
     scheduleNotificationAsync: jest.fn(async () => `mock-notif-${nextId++}`),
     cancelScheduledNotificationAsync: jest.fn().mockResolvedValue(undefined),
+    cancelAllScheduledNotificationsAsync: jest.fn().mockResolvedValue(undefined),
+    setNotificationCategoryAsync: jest.fn().mockResolvedValue(undefined),
+    getPresentedNotificationsAsync: jest.fn().mockResolvedValue([]),
+    dismissNotificationAsync: jest.fn().mockResolvedValue(undefined),
+    addNotificationResponseReceivedListener: jest.fn(() => ({ remove: jest.fn() })),
     AndroidImportance: { HIGH: 4, DEFAULT: 3, LOW: 2, MIN: 1, NONE: 0 },
     SchedulableTriggerInputTypes: {
       CALENDAR: 'calendar',
@@ -174,8 +194,28 @@ jest.mock('@react-native-async-storage/async-storage', () =>
 // Mock react-native-gesture-handler
 jest.mock('react-native-gesture-handler', () => {
   const View = require('react-native').View;
+  // A chainable gesture builder: every method returns the same object so
+  // `.activateAfterLongPress(150).onStart(fn).onEnd(fn)` chains resolve to a
+  // gesture stub (the drag itself is device-verified, not unit-tested).
+  const makeChainableGesture = () => {
+    const gesture = new Proxy({}, { get: () => () => gesture });
+    return gesture;
+  };
   return {
     GestureHandlerRootView: View,
+    GestureDetector: ({ children }) => children,
+    Gesture: {
+      Pan: makeChainableGesture,
+      Tap: makeChainableGesture,
+      LongPress: makeChainableGesture,
+      Fling: makeChainableGesture,
+      Pinch: makeChainableGesture,
+      Rotation: makeChainableGesture,
+      Race: makeChainableGesture,
+      Simultaneous: makeChainableGesture,
+      Exclusive: makeChainableGesture,
+      Native: makeChainableGesture,
+    },
     Swipeable: View,
     TouchableOpacity: View,
     DrawerLayout: View,
@@ -228,18 +268,39 @@ jest.mock('react-native-gesture-handler/ReanimatedSwipeable', () => {
 // Mock react-native-reanimated
 jest.mock('react-native-reanimated', () => {
   const React = require('react');
-  const { View } = require('react-native');
+  const { View, ScrollView } = require('react-native');
   const createAnimationMock = () => ({ duration: () => createAnimationMock() });
   return {
     __esModule: true,
-    default: { View },
+    default: { View, ScrollView, createAnimatedComponent: (Component) => Component },
     useSharedValue: (init) => React.useRef({ value: init }).current,
     useAnimatedStyle: (fn) => fn(),
     useDerivedValue: (fn) => ({ value: fn() }),
+    // Linear map between the first and last stops, clamped — enough for the
+    // synchronous worklet the useAnimatedStyle mock runs.
+    interpolate: (value, input, output) => {
+      const inMin = input[0];
+      const inMax = input[input.length - 1];
+      const outMin = output[0];
+      const outMax = output[output.length - 1];
+      if (inMax === inMin) return outMin;
+      const t = Math.max(0, Math.min(1, (value - inMin) / (inMax - inMin)));
+      return outMin + t * (outMax - outMin);
+    },
+    Extrapolation: { CLAMP: 'clamp', EXTEND: 'extend', IDENTITY: 'identity' },
     withTiming: (toValue) => toValue,
     withSpring: (toValue) => toValue,
     withSequence: (...args) => args[args.length - 1],
+    withRepeat: (animation) => animation,
     useAnimatedReaction: jest.fn(),
+    // Drag-reorder worklet plumbing — runOnJS returns the fn so callers can
+    // invoke it synchronously; the scroll/frame helpers are inert stubs.
+    runOnJS: (fn) => fn,
+    useAnimatedRef: () => React.useRef(null),
+    useAnimatedScrollHandler: (handler) => handler,
+    useFrameCallback: () => ({ setActive: jest.fn() }),
+    scrollTo: jest.fn(),
+    measure: jest.fn(() => null),
     Easing: {
       linear: jest.fn(),
       ease: jest.fn(),
@@ -265,12 +326,47 @@ jest.mock('react-native-keyboard-controller', () => {
 
   return {
     KeyboardProvider: ({ children }) => React.createElement(React.Fragment, null, children),
+    KeyboardAvoidingView: React.forwardRef(({ children, behavior: _behavior, ...props }, ref) =>
+      React.createElement(View, { ...props, ref }, children),
+    ),
     KeyboardAwareScrollView: React.forwardRef(({ children, ...props }, ref) =>
       React.createElement(ScrollView, { ...props, ref }, children),
     ),
     KeyboardStickyView: React.forwardRef(({ children, offset: _offset, enabled: _enabled, ...props }, ref) =>
       React.createElement(View, { ...props, ref }, children),
     ),
+    // Keyboard-closed shared values; tests render with the rail expanded.
+    useReanimatedKeyboardAnimation: () => ({ height: { value: 0 }, progress: { value: 0 } }),
+    // isVisible defaults to true so the Android IME-retry path in
+    // focusSetCellInput stays quiet unless a test opts in.
+    KeyboardController: {
+      setDefaultMode: jest.fn(),
+      setInputMode: jest.fn(),
+      preload: jest.fn(),
+      dismiss: jest.fn(),
+      setFocusTo: jest.fn(),
+      isVisible: jest.fn(() => true),
+      state: jest.fn(() => ({})),
+    },
+    // Subscriptions are inert; tests drive a listener by pulling the callback
+    // out of addListener.mock.calls.
+    KeyboardEvents: {
+      addListener: jest.fn(() => ({ remove: jest.fn() })),
+    },
+  };
+});
+
+// Mock expo-glass-effect. Availability is false so iOS tests exercise the
+// classic native-header path (useNativeIOSHeadersActive() → true) instead of
+// the Liquid Glass fallback; tests that need glass-on mock
+// src/utils/liquidGlass locally.
+jest.mock('expo-glass-effect', () => {
+  const { View } = require('react-native');
+  return {
+    GlassView: View,
+    GlassContainer: View,
+    isLiquidGlassAvailable: () => false,
+    isGlassEffectAPIAvailable: () => false,
   };
 });
 
@@ -392,6 +488,21 @@ jest.mock('uniwind', () => ({
     setTheme: jest.fn(),
   },
 }));
+
+// Mock react-native-enriched-markdown (native md4c renderer). Render the
+// markdown prop as plain Text so chat tests can assert content without the
+// native component; `remend` runs for real (it's plain JS).
+jest.mock('react-native-enriched-markdown', () => {
+  const React = require('react');
+  const { Text } = require('react-native');
+  const Markdown = ({ markdown, onLinkPress, selectable, streamingAnimation }) =>
+    React.createElement(
+      Text,
+      { testID: 'enriched-markdown', onLinkPress, selectable, streamingAnimation },
+      markdown,
+    );
+  return { __esModule: true, EnrichedMarkdownText: Markdown, default: Markdown };
+});
 
 // Mock react-native-toast-message
 jest.mock('react-native-toast-message', () => {

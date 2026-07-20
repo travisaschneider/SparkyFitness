@@ -1,30 +1,56 @@
 import express from 'express';
+import { z } from 'zod';
 import { log } from '../config/logging.js';
 import {
   performBackup,
   performRestore,
   BACKUP_DIR,
 } from '../services/backupService.js';
+import { rescheduleBackups } from '../services/backupScheduler.js';
 import { authenticate, isAdmin } from '../middleware/authMiddleware.js';
 import backupSettingsRepository from '../models/backupSettingsRepository.js';
+
+const backupSettingsBodySchema = z.object({
+  backupEnabled: z.boolean(),
+  backupDays: z.array(
+    z.enum([
+      'Monday',
+      'Tuesday',
+      'Wednesday',
+      'Thursday',
+      'Friday',
+      'Saturday',
+      'Sunday',
+    ])
+  ),
+  backupTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+  retentionDays: z.number().int().positive(),
+});
 // @ts-expect-error TS(7016): Could not find a declaration file for module 'mult... Remove this comment to see the full error message
 import multer from 'multer';
 import path from 'path';
 import { promises } from 'fs';
+import { randomUUID } from 'crypto';
 import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const router = express.Router();
 const fs = { promises }.promises;
+// Temporary directory for uploaded backup files. Resolved from an env var so
+// the path can live on writable storage (the application directory may be
+// read-only, e.g. when installed into the Nix store).
+const TEMP_UPLOAD_DIR = process.env.SPARKY_FITNESS_CUSTOM_TEMP_DIRECTORY
+  ? path.resolve(process.env.SPARKY_FITNESS_CUSTOM_TEMP_DIRECTORY)
+  : path.join(__dirname, '../temp_uploads/');
 // Configure multer for file uploads (for restore)
 const upload = multer({
-  dest: path.join(__dirname, '../temp_uploads/'), // Temporary directory for uploaded backup files
+  dest: TEMP_UPLOAD_DIR,
   limits: { fileSize: 1024 * 1024 * 500 }, // 500 MB limit, adjust as needed
 });
 // Ensure temporary upload directory exists
 async function ensureTempUploadDirectory() {
-  const tempUploadDir = path.join(__dirname, '../temp_uploads/');
+  const tempUploadDir = TEMP_UPLOAD_DIR;
   try {
     await fs.mkdir(tempUploadDir, { recursive: true });
     log('info', `Ensured temporary upload directory exists: ${tempUploadDir}`);
@@ -146,13 +172,17 @@ router.post(
     const uploadedFilePath = req.file.path;
     // @ts-expect-error TS(2339): Property 'file' does not exist on type 'Request<{}... Remove this comment to see the full error message
     const originalFileName = req.file.originalname;
+    // Never derive the on-disk path from the uploaded filename. A server-generated
+    // name keeps shell metacharacters and `..` traversal sequences out of the path
+    // entirely; tar reads the archive by content, so the name does not matter.
+    const safeFileName = `restore_${randomUUID()}.tar.gz`;
     log(
       'info',
-      `Uploaded backup file: ${originalFileName} to ${uploadedFilePath}`
+      `Uploaded backup file: ${originalFileName} -> ${safeFileName} at ${uploadedFilePath}`
     );
     try {
       // Move the uploaded file to the designated backup directory for processing
-      const finalBackupPath = path.join(BACKUP_DIR, originalFileName);
+      const finalBackupPath = path.join(BACKUP_DIR, safeFileName);
       await fs.copyFile(uploadedFilePath, finalBackupPath);
       await fs.unlink(uploadedFilePath);
       log('info', `Moved uploaded file to: ${finalBackupPath}`);
@@ -292,8 +322,16 @@ router.get('/settings', authenticate, isAdmin, async (req, res) => {
  *         description: Server error.
  */
 router.post('/settings', authenticate, isAdmin, async (req, res) => {
+  const parsed = backupSettingsBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({
+      message: 'Invalid backup settings.',
+      errors: parsed.error.flatten(),
+    });
+    return;
+  }
+  const { backupEnabled, backupDays, backupTime, retentionDays } = parsed.data;
   try {
-    const { backupEnabled, backupDays, backupTime, retentionDays } = req.body;
     const updatedSettings = await backupSettingsRepository.updateBackupSettings(
       {
         backup_enabled: backupEnabled,
@@ -302,10 +340,23 @@ router.post('/settings', authenticate, isAdmin, async (req, res) => {
         retention_days: retentionDays,
       }
     );
-    // TODO: Re-schedule cron jobs based on new settings
+
+    let schedulerFailed = false;
+    try {
+      await rescheduleBackups();
+    } catch (schedErr) {
+      log(
+        'error',
+        '[CRON] Settings saved but live reschedule failed:',
+        schedErr
+      );
+      schedulerFailed = true;
+    }
+
     res.status(200).json({
       message: 'Backup settings saved successfully.',
       settings: updatedSettings,
+      ...(schedulerFailed ? { schedulerFailed: true } : {}),
     });
   } catch (error) {
     log('error', 'Error saving backup settings:', error);

@@ -1,5 +1,6 @@
 import { HealthMetric } from '../HealthMetrics';
 import { SleepStageEvent } from './mobileHealthData';
+import type { RecordSyncError } from '../services/api/healthDataApi';
 
 // ==========================================
 // RAW INPUT TYPES (for aggregation functions)
@@ -26,20 +27,43 @@ export interface HKSleepRecord {
 // INTERNAL ACCUMULATOR TYPES
 // ==========================================
 
-/** Sleep stage type including 'in_bed' */
+/** Sleep stage type including 'in_bed' (the output shape stored in stage_events) */
 export type SleepStageType = 'awake' | 'rem' | 'light' | 'deep' | 'in_bed' | 'unknown';
 
-/** Internal session state during sleep aggregation (uses Date objects) */
+/**
+ * Internal sleep stage classification used only during HealthKit overlap resolution.
+ * Splits Apple-Watch 'core' from generic 'asleep' so 'awake' can rank between them
+ * (the common Watch-vs-AutoSleep conflict is Watch=awake vs AutoSleep=generic-asleep,
+ * where the Watch's awake must win). Both 'core' and 'asleep_generic' map to the same
+ * output 'light' stage. See mapHealthKitSleepStage / SLEEP_STAGE_RANK in dataAggregation.ts.
+ */
+export type InternalSleepStage =
+  | 'deep'
+  | 'rem'
+  | 'core'
+  | 'awake'
+  | 'asleep_generic'
+  | 'in_bed'
+  | 'unknown';
+
+/** One raw HealthKit sleep sample collected before overlap resolution (uses epoch ms). */
+export interface SleepRawEvent {
+  startMs: number;
+  endMs: number;
+  internalStage: InternalSleepStage;
+  /** Priority for overlap resolution; higher wins. Derived from SLEEP_STAGE_RANK. */
+  rank: number;
+}
+
+/**
+ * Internal session state during sleep aggregation (uses Date objects).
+ * Collects raw, possibly-overlapping samples from all HealthKit sources; the
+ * non-overlapping timeline and per-stage buckets are derived in finalizeSession.
+ */
 export interface SleepSessionAccumulator {
   bedtime: Date;
   wake_time: Date;
-  stage_events: SleepStageEvent[];
-  total_duration_in_seconds: number;
-  total_time_asleep_in_seconds: number;
-  deep_sleep_seconds: number;
-  light_sleep_seconds: number;
-  rem_sleep_seconds: number;
-  awake_sleep_seconds: number;
+  raw_events: SleepRawEvent[];
   /** IANA timezone from the sample that set wake_time (for server-side day derivation) */
   record_timezone?: string;
 }
@@ -124,6 +148,16 @@ export interface TransformedExerciseSession extends RecordTimezoneMetadata {
  */
 export type MetricConfig = Pick<HealthMetric, 'recordType' | 'unit' | 'type'>;
 
+/**
+ * Platform-neutral read envelope. Read failures return the error alongside any
+ * partially collected records instead of throwing, so callers can surface the
+ * error (holding the sync cursor) while still syncing what was read.
+ */
+export interface ReadResult<T = unknown> {
+  records: T[];
+  error?: string;
+}
+
 /** Simple transformed record for API */
 export interface TransformedRecord extends RecordTimezoneMetadata {
   value: number;
@@ -133,11 +167,51 @@ export interface TransformedRecord extends RecordTimezoneMetadata {
   source: string;
 }
 
+/** Sparky meal type slug derived from Health Connect MealType constant */
+export type SparkyMealType = 'breakfast' | 'lunch' | 'dinner' | 'snacks';
+
+/**
+ * Nutrition entry output (one per Health Connect NutritionRecord).
+ *
+ * Maps an HC NutritionRecord (a single eaten item with a name, meal type and
+ * nutrients) to a structure the server ingests as a food entry. Energy is in
+ * kcal; nutrients are converted from HC's grams to each Sparky column's unit
+ * (g for macros, mg/mcg for micros — see HC_NUTRIENT_COLUMNS).
+ */
+export interface TransformedNutritionEntry extends RecordTimezoneMetadata {
+  type: 'Nutrition';
+  source: typeof HEALTHKIT_SOURCE | typeof HEALTH_CONNECT_SOURCE;
+  /** Stable Health Connect record id, used for idempotent re-sync. */
+  source_id?: string;
+  /** Instant the food was consumed; the server derives the day from this + offset. */
+  timestamp: string;
+  food_name: string;
+  meal_type: SparkyMealType;
+  calories?: number;
+  protein?: number;
+  carbs?: number;
+  fat?: number;
+  saturated_fat?: number;
+  polyunsaturated_fat?: number;
+  monounsaturated_fat?: number;
+  trans_fat?: number;
+  cholesterol?: number;
+  sodium?: number;
+  potassium?: number;
+  dietary_fiber?: number;
+  sugars?: number;
+  vitamin_a?: number;
+  vitamin_c?: number;
+  calcium?: number;
+  iron?: number;
+}
+
 /** Union type for all possible transform outputs */
 export type TransformOutput =
   | TransformedRecord
   | AggregatedSleepSession
-  | TransformedExerciseSession;
+  | TransformedExerciseSession
+  | TransformedNutritionEntry;
 
 // ==========================================
 // SYNC RESULT TYPES (Phase 5)
@@ -164,6 +238,12 @@ export interface SyncResult {
   error?: string;
   message?: string;
   syncErrors: SyncError[];
+  /**
+   * Per-record rejections reported by the server during upload. Deliberately
+   * separate from syncErrors (read failures): upload rejections never suppress
+   * saving the sync cursor, so a poison record cannot cause a re-sync loop.
+   */
+  uploadErrors?: RecordSyncError[];
 }
 
 /**

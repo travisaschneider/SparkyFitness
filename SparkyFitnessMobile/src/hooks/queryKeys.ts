@@ -29,6 +29,10 @@ export const recentMealsQueryKeyRoot = ['recentMeals'] as const;
 
 export const recentMealsQueryKey = (limit: number) => [...recentMealsQueryKeyRoot, limit] as const;
 
+export const topMealsQueryKeyRoot = ['topMeals'] as const;
+
+export const topMealsQueryKey = (limit: number) => [...topMealsQueryKeyRoot, limit] as const;
+
 export const mealSearchQueryKeyRoot = ['mealSearch'] as const;
 
 export const mealSearchQueryKey = (searchTerm: string) => [...mealSearchQueryKeyRoot, searchTerm] as const;
@@ -37,6 +41,12 @@ export const externalProvidersQueryKey = ['externalProviders'] as const;
 
 export const externalFoodSearchQueryKey = (providerType: string, searchTerm: string, providerId?: string, autoScale?: boolean) =>
   ['externalFoodSearch', providerType, searchTerm, providerId, autoScale] as const;
+
+// First-page-only key for the "All Providers" fan-out. Kept distinct from
+// externalFoodSearchQueryKey (which backs an infinite query) so the two query
+// shapes do not collide in the cache.
+export const allProvidersFoodSearchQueryKey = (providerType: string, searchTerm: string, providerId?: string, autoScale?: boolean) =>
+  ['allProvidersFoodSearch', providerType, searchTerm, providerId, autoScale] as const;
 
 export const mealTypesQueryKey = ['mealTypes'] as const;
 
@@ -49,12 +59,22 @@ export const measurementsRangeQueryKey = (startDate: string, endDate: string) =>
 
 export const exerciseHistoryQueryKey = ['exerciseHistory'] as const;
 
+/** Per-exercise filtered history; extends the root so prefix invalidation covers it. */
+export const exerciseHistoryForExerciseQueryKey = (exerciseId: string) =>
+  [...exerciseHistoryQueryKey, exerciseId] as const;
+
 export const exerciseHistoryResetQueryKey = ['exerciseHistoryReset'] as const;
 
 export const exerciseStatsQueryKeyRoot = ['exerciseStats'] as const;
 
-export const exerciseStatsQueryKey = (exerciseId: string) =>
-  [...exerciseStatsQueryKeyRoot, exerciseId] as const;
+export const exerciseStatsQueryKey = (
+  exerciseId: string,
+  excludePresetEntryId?: string,
+) =>
+  [...exerciseStatsQueryKeyRoot, exerciseId, excludePresetEntryId ?? null] as const;
+
+export const exerciseDetailQueryKey = (exerciseId: string) =>
+  ['exerciseDetail', exerciseId] as const;
 
 export const suggestedExercisesQueryKey = ['suggestedExercises'] as const;
 
@@ -74,3 +94,14 @@ export const workoutPresetsLibraryQueryKey = (searchTerm: string) =>
 
 export const activeAiServiceSettingQueryKey = ['ai-service-settings', 'active'] as const;
 export const userAiConfigAllowedQueryKey = ['ai-service-settings', 'allow-user-ai-config'] as const;
+
+export const fastingRootQueryKey = ['fasting'] as const;
+export const fastingCurrentQueryKey = ['fasting', 'current'] as const;
+export const fastingStatsQueryKey = ['fasting', 'stats'] as const;
+export const fastingHistoryQueryKey = (limit: number, offset: number) =>
+  ['fasting', 'history', limit, offset] as const;
+
+export const customNutrientsQueryKey = ['customNutrients'] as const;
+export const nutrientDisplayPreferencesQueryKey = ['nutrientDisplayPreferences'] as const;
+
+export const chatHistoryQueryKey = ['chatHistory'] as const;

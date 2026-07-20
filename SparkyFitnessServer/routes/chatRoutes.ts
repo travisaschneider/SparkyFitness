@@ -1,7 +1,19 @@
 import express from 'express';
+import { pipeUIMessageStreamToResponse } from 'ai';
 import { authenticate } from '../middleware/authMiddleware.js';
 import chatService from '../services/chatService.js';
+import type { FoodOptionsErrorCategory } from '../services/chatService.js';
 import globalSettingsRepository from '../models/globalSettingsRepository.js';
+import { resolveIsAdmin } from '../utils/adminCheck.js';
+import {
+  assertOutboundUrlShapeAndLiteralAllowed,
+  deriveAiNetworkPolicy,
+  OutboundUrlBlockedError,
+} from '../utils/outboundUrlPolicy.js';
+import {
+  testAiServiceConnectionRequestSchema,
+  normalizeChatToolCategories,
+} from '@workspace/shared';
 const router = express.Router();
 /**
  * @swagger
@@ -48,6 +60,10 @@ const router = express.Router();
  */
 router.post('/', authenticate, async (req, res, next) => {
   const { messages, service_config_id, action, service_data } = req.body;
+  // Optional runtime tool-category selection from the client; normalized to
+  // known slugs (unknown/empty -> undefined so the service falls back to the
+  // per-service profile default rather than loading zero tools).
+  const toolCategories = normalizeChatToolCategories(req.body?.toolCategories);
   try {
     if (action === 'save_ai_service_settings') {
       // Check if user AI config is allowed
@@ -82,6 +98,36 @@ router.post('/', authenticate, async (req, res, next) => {
             .json({ error: 'service_data.service_name is required.' });
         }
       }
+      // SSRF guard: a non-admin must not be able to point the server's outbound
+      // AI request at a private/internal address (localhost, RFC1918, link-local,
+      // cloud metadata). The admin is the trusted operator, so their own
+      // self-hosted URLs (e.g. local Ollama) are allowed; an operator who wants
+      // regular users to reach a shared private AI service opts in explicitly
+      // with ALLOW_PRIVATE_NETWORK_AI=true.
+      if (service_data.custom_url) {
+        const isAdmin = await resolveIsAdmin(req.user, req.authenticatedUserId);
+        const networkPolicy = deriveAiNetworkPolicy(
+          { source: 'user' },
+          isAdmin
+        );
+        try {
+          assertOutboundUrlShapeAndLiteralAllowed(
+            service_data.custom_url,
+            networkPolicy
+          );
+        } catch (error) {
+          // Policy denials (private/internal address) are 403; a URL fetch could
+          // never use (malformed, wrong scheme, credentials) is a plain 400.
+          return res
+            .status(error instanceof OutboundUrlBlockedError ? 403 : 400)
+            .json({
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Custom AI service URLs must be public http(s) endpoints. Private or internal addresses are not allowed.',
+            });
+        }
+      }
       const result = await chatService.handleAiServiceSettings(
         action,
         service_data,
@@ -90,6 +136,7 @@ router.post('/', authenticate, async (req, res, next) => {
       );
       return res.status(200).json(result);
     }
+    const isAdmin = await resolveIsAdmin(req.user, req.authenticatedUserId);
     const {
       content,
       action: actionType,
@@ -98,7 +145,9 @@ router.post('/', authenticate, async (req, res, next) => {
       messages,
       service_config_id,
       req.userId,
-      req.headers
+      req.authenticatedUserId,
+      isAdmin,
+      toolCategories
     );
     return res.status(200).json({ content, action: actionType, executedTools });
   } catch (error) {
@@ -151,21 +200,19 @@ router.post('/', authenticate, async (req, res, next) => {
 });
 router.post('/stream', authenticate, async (req, res, next) => {
   const { messages, service_config_id } = req.body;
+  const toolCategories = normalizeChatToolCategories(req.body?.toolCategories);
   try {
-    const { result, mcpClient } = await chatService.processChatMessageStream(
+    const isAdmin = await resolveIsAdmin(req.user, req.authenticatedUserId);
+    const { stream } = await chatService.processChatMessageStream(
       messages,
       service_config_id,
       req.userId,
-      req.headers
+      req.authenticatedUserId,
+      isAdmin,
+      toolCategories
     );
 
-    res.on('close', () => {
-      if (mcpClient) {
-        mcpClient.close().catch(() => {});
-      }
-    });
-
-    result.pipeUIMessageStreamToResponse(res);
+    pipeUIMessageStreamToResponse({ response: res, stream });
   } catch (error) {
     next(error);
   }
@@ -273,6 +320,85 @@ router.get(
         // @ts-expect-error TS(2571): Object is of type 'unknown'.
         return res.status(404).json({ error: error.message });
       }
+      next(error);
+    }
+  }
+);
+/**
+ * @swagger
+ * /chat/ai-service-settings/test:
+ *   post:
+ *     summary: Test an AI service connection with a minimal live completion
+ *     description: >
+ *       Runs a minimal completion against the supplied provider config without
+ *       persisting anything. Returns HTTP 200 for both pass (`ok: true`) and
+ *       provider failure (`ok: false`, with a `category`), so the client can show
+ *       a friendly, category-specific message instead of a generic API error.
+ *       On edit, a blank `api_key` falls back to the stored encrypted key.
+ *     tags: [AI & Insights]
+ *     security:
+ *       - cookieAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [service_type]
+ *             properties:
+ *               id:
+ *                 type: string
+ *                 format: uuid
+ *               service_type:
+ *                 type: string
+ *               api_key:
+ *                 type: string
+ *               custom_url:
+ *                 type: string
+ *               model_name:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Test result (pass or provider failure).
+ *       400:
+ *         description: Bad request (malformed body or missing required model).
+ *       403:
+ *         description: Forbidden (per-user AI config disabled, or non-admin testing a global service).
+ *       500:
+ *         description: Server error.
+ */
+router.post(
+  '/ai-service-settings/test',
+  authenticate,
+  async (req, res, next) => {
+    const parsed = testAiServiceConnectionRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res
+        .status(400)
+        .json({ error: 'Invalid test connection request.' });
+    }
+    try {
+      // Gate #1 (per-user-AI-config): a test fires an outbound provider call, so
+      // it must respect the same admin policy as the save path — non-admins are
+      // rejected unless per-user AI config is enabled. Admins always pass.
+      const isAdmin = await resolveIsAdmin(req.user, req.authenticatedUserId);
+      if (
+        !isAdmin &&
+        !(await globalSettingsRepository.isUserAiConfigAllowed())
+      ) {
+        return res.status(403).json({
+          error:
+            'Per-user AI service configuration is disabled. Please use the global AI service settings configured by your administrator.',
+        });
+      }
+      // Gates #2 (global-key) and #3 (provider-mismatch) live in the service.
+      const result = await chatService.testAiServiceConnection(
+        parsed.data,
+        req.userId,
+        isAdmin
+      );
+      return res.status(200).json(result);
+    } catch (error) {
       next(error);
     }
   }
@@ -673,14 +799,38 @@ router.post('/save-history', authenticate, async (req, res, next) => {
  *                 format: uuid
  *     responses:
  *       200:
- *         description: List of food options generated by the AI service.
+ *         description: Raw AI JSON text containing the generated food options, returned as a string in `content`.
  *       400:
- *         description: Bad request.
+ *         description: Missing service_config_id.
  *       404:
- *         description: Not found.
+ *         description: No AI service configured, or its API key / custom URL is missing.
+ *       422:
+ *         description: AI response unusable (refused, truncated, empty, invalid JSON, or unsupported provider).
  *       500:
  *         description: Server error.
+ *       502:
+ *         description: Upstream AI service error.
+ *       504:
+ *         description: AI service timed out.
  */
+// Unlike scan-label (422), api_key_missing/custom_url_missing/no_ai_configured
+// map to 404 here to preserve this endpoint's legacy semantics.
+const FOOD_OPTIONS_ERROR_HTTP_STATUS: Record<FoodOptionsErrorCategory, number> =
+  {
+    no_ai_configured: 404,
+    api_key_missing: 404,
+    custom_url_missing: 404,
+    private_network_forbidden: 403,
+    unsupported_provider: 422,
+    unsupported_media: 422, // unreachable (no images sent); required for exhaustiveness
+    refused: 422,
+    truncated: 422,
+    no_content: 422,
+    parse_error: 422,
+    upstream_error: 502,
+    timeout: 504,
+  };
+
 router.post('/food-options', authenticate, async (req, res, next) => {
   const { foodName, unit, service_config_id } = req.body;
   if (!service_config_id) {
@@ -689,41 +839,21 @@ router.post('/food-options', authenticate, async (req, res, next) => {
       .json({ error: 'AI service configuration ID is required.' });
   }
   try {
-    const { content } = await chatService.processFoodOptionsRequest(
+    const isAdmin = await resolveIsAdmin(req.user, req.authenticatedUserId);
+    const result = await chatService.processFoodOptionsRequest(
       foodName,
       unit,
 
       req.userId,
-      service_config_id
+      service_config_id,
+      isAdmin
     );
-    return res.status(200).json({ content });
+    if (!result.success) {
+      const status = FOOD_OPTIONS_ERROR_HTTP_STATUS[result.category] ?? 500;
+      return res.status(status).json({ error: result.error });
+    }
+    return res.status(200).json({ content: result.content });
   } catch (error) {
-    // @ts-expect-error TS(2571): Object is of type 'unknown'.
-    if (error.message.startsWith('AI service configuration ID is missing')) {
-      // @ts-expect-error TS(2571): Object is of type 'unknown'.
-      return res.status(400).json({ error: error.message });
-    }
-    if (
-      // @ts-expect-error TS(2571): Object is of type 'unknown'.
-      error.message.startsWith('AI service setting not found') ||
-      // @ts-expect-error TS(2571): Object is of type 'unknown'.
-      error.message.startsWith('API key missing')
-    ) {
-      // @ts-expect-error TS(2571): Object is of type 'unknown'.
-      return res.status(404).json({ error: error.message });
-    }
-    // @ts-expect-error TS(2571): Object is of type 'unknown'.
-    if (error.message.startsWith('AI service API call error')) {
-      // @ts-expect-error TS(2571): Object is of type 'unknown'.
-      const statusCodeMatch = error.message.match(
-        /AI service API call error: (\d+) -/
-      );
-      const statusCode = statusCodeMatch
-        ? parseInt(statusCodeMatch[1], 10)
-        : 500;
-      // @ts-expect-error TS(2571): Object is of type 'unknown'.
-      return res.status(statusCode).json({ error: error.message });
-    }
     next(error);
   }
 });

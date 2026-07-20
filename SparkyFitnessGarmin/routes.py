@@ -18,6 +18,7 @@ from schemas import (
     GarminLoginRequest,
     HealthAndWellnessRequest,
     ActivitiesAndWorkoutsRequest,
+    NutritionDiaryRequest,
 )
 from service import (
     ALL_HEALTH_METRICS,
@@ -172,7 +173,7 @@ async def get_health_and_wellness(request_data: HealthAndWellnessRequest):
             )
 
         garmin = Garmin(is_cn=IS_CN)
-        garmin.client.loads(tokens_string)
+        garmin.login(tokens_string)
 
         # Initialize health_data as a dictionary where each key is a metric type and the value is a list of daily entries
         health_data = {metric: [] for metric in ALL_HEALTH_METRICS}
@@ -1507,7 +1508,7 @@ async def get_activities_and_workouts(request_data: ActivitiesAndWorkoutsRequest
             )
 
         garmin = Garmin(is_cn=IS_CN)
-        garmin.client.loads(tokens_string)
+        garmin.login(tokens_string)
 
         logger.info(
             f"Fetching activities for user {user_id} from {start_date} to {end_date} with activity type {activity_type}"
@@ -1655,6 +1656,85 @@ async def get_activities_and_workouts(request_data: ActivitiesAndWorkoutsRequest
             "workouts": cleaned_workouts,
             "new_tokens": json.loads(garmin.client.dumps()),
         }
+
+    except GarminConnectAuthenticationError as e:
+        raise HTTPException(
+            status_code=401, detail=f"Garmin authentication failed: {e}"
+        )
+    except GarminConnectTooManyRequestsError as e:
+        raise HTTPException(status_code=429, detail=f"Garmin rate limit hit: {e}")
+    except GarminConnectConnectionError as e:
+        raise HTTPException(status_code=500, detail=f"Garmin connection error: {e}")
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"An unexpected error occurred: {e}"
+        )
+
+
+@router.post("/data/nutrition_diary")
+async def get_nutrition_diary(request_data: NutritionDiaryRequest):
+    """
+    Retrieves daily nutrition food log data from Garmin for each date in the range.
+    """
+    user_id = request_data.user_id
+    start_date = request_data.start_date
+    end_date = request_data.end_date
+
+    filename = "nutrition_diary_data.json"
+
+    if GARMIN_DATA_SOURCE == "local":
+        local_data = _load_from_local_file(filename)
+        if local_data:
+            logger.info(
+                f"Returning local nutrition diary data for user {user_id} from {start_date} to {end_date}."
+            )
+            return local_data
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Local data not found for {start_date} to {end_date}. Please set GARMIN_DATA_SOURCE to 'garmin' to fetch and save data.",
+            )
+
+    try:
+        tokens_string = request_data.tokens
+
+        if not user_id or not tokens_string or not start_date or not end_date:
+            raise HTTPException(
+                status_code=400,
+                detail="Missing user_id, tokens, start_date, or end_date.",
+            )
+
+        garmin = Garmin(is_cn=IS_CN)
+        garmin.login(tokens_string)
+
+        dates = get_dates_in_range(start_date, end_date)
+        nutrition_data = []
+
+        for date_str in dates:
+            try:
+                food_log = garmin.get_nutrition_daily_food_log(date_str)
+                if food_log:
+                    nutrition_data.append(food_log)
+            except Exception as e:
+                logger.warning(
+                    f"Failed to fetch nutrition data for {date_str} for user {user_id}: {e}"
+                )
+                continue
+
+        cleaned_data = clean_garmin_data(nutrition_data)
+
+        result = {
+            "user_id": user_id,
+            "start_date": start_date,
+            "end_date": end_date,
+            "nutrition_data": cleaned_data,
+            "new_tokens": json.loads(garmin.client.dumps()),
+        }
+
+        if SAVE_MOCK_DATA:
+            _save_to_local_file(filename, result)
+
+        return result
 
     except GarminConnectAuthenticationError as e:
         raise HTTPException(

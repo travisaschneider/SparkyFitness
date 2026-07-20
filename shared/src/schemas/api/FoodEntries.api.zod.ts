@@ -11,6 +11,9 @@ export const foodEntryResponseSchema = z.object({
   unit: z.string().nullable(),
   variant_id: z.string().nullable(),
   entry_date: z.string(),
+  // Optional wall-clock time of day ('HH:MM:SS' from Postgres TIME); NULL when
+  // the user did not record a time.
+  entry_time: z.string().nullish(),
   meal_plan_template_id: z.string().nullable(),
   food_entry_meal_id: z.string().nullable(),
   food_name: z.string().nullable(),
@@ -36,6 +39,9 @@ export const foodEntryResponseSchema = z.object({
   iron: z.number().nullable(),
   glycemic_index: z.string().nullable(),
   custom_nutrients: z.record(z.string(), z.union([z.string(), z.number()])).nullable(),
+  // Provider that produced this entry (e.g. 'health_connect'); NULL/absent for
+  // manual entries. Not every food-entry query selects it, so keep it optional.
+  source: z.string().nullish(),
 });
 
 export type FoodEntryResponse = z.infer<typeof foodEntryResponseSchema>;

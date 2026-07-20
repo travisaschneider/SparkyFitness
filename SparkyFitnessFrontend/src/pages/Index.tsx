@@ -10,9 +10,13 @@ import { useState } from 'react';
 
 interface IndexProps {
   onShowAboutDialog: () => void;
+  onShowNewReleaseDialog: () => void;
 }
 
-const Index: React.FC<IndexProps> = ({ onShowAboutDialog }) => {
+const Index: React.FC<IndexProps> = ({
+  onShowAboutDialog,
+  onShowNewReleaseDialog,
+}) => {
   const { user, loading: authLoading } = useAuth();
   const { loggingLevel } = usePreferences();
   debug(loggingLevel, 'Index: Component rendered (onboarding check).');
@@ -21,11 +25,18 @@ const Index: React.FC<IndexProps> = ({ onShowAboutDialog }) => {
   const { data, isLoading: queryLoading } = useOnboardingStatus(
     !authLoading && !!user
   );
-  const [hasSkipped, setHasSkipped] = useState(false);
+  // Allows the user to manually re-open the wizard from the main layout
+  const [showOnboardingManually, setShowOnboardingManually] = useState(false);
 
   const isLoading = authLoading || (!!user && queryLoading);
-  const needsOnboarding =
-    !hasSkipped && user && data?.onboardingComplete === false;
+
+  // Show wizard automatically when onboarding is not complete and the user hasn't skipped it
+  const autoShowWizard =
+    !!user && data?.onboardingComplete === false && !data?.onboardingSkipped;
+
+  // Also show if the user explicitly re-opened it via "Complete Setup"
+  const showWizard = autoShowWizard || showOnboardingManually;
+
   if (isLoading) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center">
@@ -34,12 +45,26 @@ const Index: React.FC<IndexProps> = ({ onShowAboutDialog }) => {
     );
   }
 
-  if (needsOnboarding) {
-    return <OnBoarding onOnboardingComplete={() => setHasSkipped(true)} />;
+  if (showWizard) {
+    return (
+      <OnBoarding
+        onOnboardingComplete={() => setShowOnboardingManually(false)}
+      />
+    );
   }
 
-  // Render MainLayout if onboarding is complete
-  return <MainLayout onShowAboutDialog={onShowAboutDialog} />;
+  // Render MainLayout; pass a callback to re-open onboarding when not yet complete
+  const onboardingIncomplete = !!user && data?.onboardingComplete === false;
+
+  return (
+    <MainLayout
+      onShowAboutDialog={onShowAboutDialog}
+      onShowNewReleaseDialog={onShowNewReleaseDialog}
+      onStartOnboarding={
+        onboardingIncomplete ? () => setShowOnboardingManually(true) : undefined
+      }
+    />
+  );
 };
 
 export default Index;

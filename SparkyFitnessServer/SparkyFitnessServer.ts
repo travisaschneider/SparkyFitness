@@ -1,11 +1,13 @@
 import path from 'path';
 
 import fs from 'fs';
+import type { ServerResponse } from 'http';
 import express from 'express';
 // @ts-expect-error TS7016
 import cors from 'cors';
 // @ts-expect-error TS7016
 import cookieParser from 'cookie-parser';
+import { bridgeBearerAuthHeader } from './utils/bearerAuthBridge.js';
 import { endPool } from './db/poolManager.js';
 import { log } from './config/logging.js';
 import { authenticate } from './middleware/authMiddleware.js';
@@ -22,9 +24,11 @@ import foodEntryRoutes from './routes/foodEntryRoutes.js';
 import foodEntryMealRoutes from './routes/foodEntryMealRoutes.js';
 import reportRoutes from './routes/reportRoutes.js';
 import preferenceRoutes from './routes/preferenceRoutes.js';
+import dashboardLayoutRoutes from './routes/dashboardLayoutRoutes.js';
 import nutrientDisplayPreferenceRoutes from './routes/nutrientDisplayPreferenceRoutes.js';
 import chatRoutes from './routes/chatRoutes.js';
 import measurementRoutes from './routes/measurementRoutes.js';
+import checkInPhotoRoutes from './routes/checkInPhotoRoutes.js';
 import goalRoutes from './routes/goalRoutes.js';
 import goalPresetRoutes from './routes/goalPresetRoutes.js';
 // @ts-expect-error TS1192
@@ -40,6 +44,7 @@ import sleepRoutes from './routes/sleepRoutes.js';
 import sleepScienceRoutes from './routes/sleepScienceRoutes.js';
 import healthRoutes from './routes/healthRoutes.js';
 import externalProviderRoutes from './routes/externalProviderRoutes.js';
+import syncedDataRoutes from './routes/syncedDataRoutes.js';
 import garminRoutes from './routes/garminRoutes.js';
 import withingsRoutes from './routes/withingsRoutes.js';
 import withingsDataRoutes from './routes/withingsDataRoutes.js';
@@ -62,20 +67,23 @@ import { applyMigrations } from './utils/dbMigrations.js';
 import { applyRlsPolicies } from './utils/applyRlsPolicies.js';
 import waterContainerRoutes from './routes/waterContainerRoutes.js';
 import waterIntakeRoutesV2 from './routes/v2/waterIntakeRoutes.js';
+import medicationRoutesV2 from './routes/v2/medicationRoutes.js';
+import symptomRoutesV2 from './routes/v2/symptomRoutes.js';
+import cycleRoutesV2 from './routes/v2/cycleRoutes.js';
+import pregnancyRoutesV2 from './routes/v2/pregnancyRoutes.js';
 import backupRoutes from './routes/backupRoutes.js';
 import errorHandler from './middleware/errorHandler.js';
 import reviewRoutes from './routes/reviewRoutes.js';
 import cron from 'node-cron';
-import {
-  performBackup,
-  applyRetentionPolicy,
-} from './services/backupService.js';
+import { scheduleBackupsOnStartup } from './services/backupScheduler.js';
 import externalProviderRepository from './models/externalProviderRepository.js';
 import garminService from './services/garminService.js';
+import { getGarminSyncPhaseErrors } from './services/garminSyncResult.js';
 import fitbitService from './services/fitbitService.js';
 import googleHealthService from './services/googleHealthService.js';
 import polarService from './services/polarService.js';
 import stravaService from './services/stravaService.js';
+import hevyService from './integrations/hevy/hevyService.js';
 // @ts-expect-error TS1192
 import dailySummaryRoutes from './routes/dailySummaryRoutes.js';
 import dashboardRoutes from './routes/dashboardRoutes.js';
@@ -90,12 +98,14 @@ import { toNodeHandler } from 'better-auth/node';
 import freeExerciseDBService from './integrations/freeexercisedb/FreeExerciseDBService.js';
 import { downloadImage } from './utils/imageDownloader.js';
 import authRoutes from './routes/authRoutes.js';
+import mcpRoutes from './routes/mcpRoutes.js';
 import identityRoutes from './routes/identityRoutes.js';
 import oidcSettingsRoutes from './routes/oidcSettingsRoutes.js';
 import adminAuthRoutes from './routes/adminAuthRoutes.js';
 import workoutPresetRoutes from './routes/workoutPresetRoutes.js';
 import workoutPlanTemplateRoutes from './routes/workoutPlanTemplateRoutes.js';
 import { cleanupSessions } from './auth.js';
+import { deleteExpiredTickets } from './services/passkeyTicketService.js';
 import withingsServiceCentral from './services/withingsService.js';
 import { upsertEnvOidcProvider } from './utils/oidcEnvConfig.js';
 import userRepository from './models/userRepository.js';
@@ -143,7 +153,13 @@ app.use(
             'x-api-key',
             'x-client-id',
             'x-requested-with',
+            // MCP StreamableHTTP headers; browser clients fail CORS preflight
+            // without them.
+            'mcp-protocol-version',
+            'mcp-session-id',
+            'last-event-id',
           ],
+          exposedHeaders: ['mcp-session-id'],
           credentials: true,
           maxAge: 86400,
         });
@@ -151,6 +167,19 @@ app.use(
       req
     );
   })
+);
+// External MCP endpoint — a self-contained chain mounted top-level (not /api)
+// to skip the /api/auth interceptor and cache-control middleware. It sits
+// before the global 50mb parser so its route-local 1mb parser wins (the global
+// parser would set req._body first and no-op the local one). cookieParser is
+// local because the global one also runs after the 50mb parser, and
+// authenticate reads req.cookies.
+app.use(
+  '/mcp',
+  express.json({ limit: '1mb' }),
+  cookieParser(),
+  authenticate,
+  mcpRoutes
 );
 // Middleware to parse JSON bodies for all incoming requests
 // Increased limit to 50mb to accommodate image uploads
@@ -179,9 +208,24 @@ app.use(async (req, res, next) => {
   if (req.originalUrl.startsWith('/api/auth') && betterAuthHandlerInstance) {
     // 1. Skip interceptor for discovery routes - let them fall through to authRoutes.js
     const isDiscovery =
-      req.path === '/api/auth/settings' || req.path === '/api/auth/mfa-factors';
+      req.path === '/api/auth/settings' ||
+      req.path === '/api/auth/mfa-factors' ||
+      req.path.startsWith('/api/auth/web-login');
     if (isDiscovery) {
       return next();
+    }
+
+    // Translate Bearer token to cookie / x-api-key before passing to the Better
+    // Auth handler. This resolves compatibility issues with Buffer secrets in
+    // @better-auth/utils/hmac and is shared with middleware/authMiddleware.ts via
+    // bridgeBearerAuthHeader so the two paths can't drift.
+    try {
+      await bridgeBearerAuthHeader(req);
+    } catch (e) {
+      log(
+        'error',
+        `Failed to bridge Bearer auth header in early interceptor: ${e}`
+      );
     }
 
     // 2. Manual Sign-Out Cleanup: preserve sparky_active_user_id delete
@@ -192,7 +236,8 @@ app.use(async (req, res, next) => {
       );
       applySignOutCookieCleanup(res);
     }
-    console.log(
+    log(
+      'debug',
       `[AUTH HANDLER] Intercepted request: ${req.method} ${req.originalUrl}`
     );
     return betterAuthHandlerInstance(req, res);
@@ -217,7 +262,33 @@ console.log('SparkyFitnessServer UPLOADS_BASE_DIR:', UPLOADS_BASE_DIR);
 // Disable etag/lastModified — iOS CFNetwork mis-handles the resulting 304s
 // on freshly uploaded images (#1353). Filenames embed Date.now() so URLs
 // are already effectively immutable; clients still cache by URL.
-const uploadsStaticOptions = { etag: false, lastModified: false };
+// Harden how stored uploads are served: `X-Content-Type-Options: nosniff` pins
+// each file to its declared type, and `Content-Disposition: attachment` is
+// defense-in-depth so a stored file can't render inline in our origin on direct
+// navigation (ignored for <img>/subresource loads, so it doesn't affect how the
+// app displays these images). express.static reads `setHeaders`; res.sendFile
+// (the on-demand route below) reads `headers`.
+const uploadsSecurityHeaders = {
+  'X-Content-Type-Options': 'nosniff',
+  'Content-Disposition': 'attachment',
+};
+const uploadsStaticOptions = {
+  etag: false,
+  lastModified: false,
+  setHeaders: (res: ServerResponse) => {
+    for (const [name, value] of Object.entries(uploadsSecurityHeaders)) {
+      res.setHeader(name, value);
+    }
+  },
+  headers: uploadsSecurityHeaders,
+};
+// Check-in progress photos are sensitive. Block direct access via the public
+// static mounts so they can only be reached through the authenticated,
+// ownership-checked route (GET /api/measurements/check-in-photos/file/:id).
+// 404 (not 403) so we don't confirm whether a given path exists.
+app.use(['/uploads/check-in', '/api/uploads/check-in'], (_req, res) => {
+  res.status(404).end();
+});
 app.use('/api/uploads', express.static(UPLOADS_BASE_DIR, uploadsStaticOptions));
 app.use('/uploads', express.static(UPLOADS_BASE_DIR, uploadsStaticOptions));
 // Mounted after uploads so static image Cache-Control isn't clobbered.
@@ -340,7 +411,23 @@ app.get(
       const externalImageUrl = freeExerciseDBService.getExerciseImageUrl(
         originalRelativeImagePath
       );
-      await downloadImage(externalImageUrl, exerciseId);
+      const downloadedImagePath = await downloadImage(
+        externalImageUrl,
+        exerciseId as string
+      );
+      localImagePath = path.resolve(
+        exercisesBaseDir,
+        exerciseId as string,
+        path.basename(downloadedImagePath)
+      );
+      const normalizedDownloadedPath = isWindows
+        ? localImagePath.toLowerCase()
+        : localImagePath;
+      if (
+        !normalizedDownloadedPath.startsWith(`${normalizedBaseDir}${path.sep}`)
+      ) {
+        return res.status(400).send('Invalid image path.');
+      }
       res.sendFile(localImagePath, uploadsStaticOptions);
     } catch (error) {
       // @ts-expect-error TS18046
@@ -355,6 +442,7 @@ const isPublicApiDocsEnabled =
 const publicRoutes = [
   '/api/auth/settings',
   '/api/auth/mfa-factors',
+  '/api/auth/web-login',
   '/api/health',
   '/api/version',
   '/api/uploads',
@@ -399,8 +487,10 @@ app.use('/api/daily-summary', dailySummaryRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/user-preferences', preferenceRoutes);
+app.use('/api/dashboard-layouts', dashboardLayoutRoutes);
 app.use('/api/preferences/nutrient-display', nutrientDisplayPreferenceRoutes);
 app.use('/api/measurements', measurementRoutes);
+app.use('/api/measurements/check-in-photos', checkInPhotoRoutes);
 app.use('/api/goals', goalRoutes);
 app.use('/api/user-goals', goalRoutes);
 app.use('/api/goal-presets', goalPresetRoutes);
@@ -418,6 +508,7 @@ app.use('/api/auth', (req, res, next) => authRoutes(req, res, next));
 app.use('/api/identity', (req, res, next) => identityRoutes(req, res, next));
 app.use('/api/health', healthRoutes);
 app.use('/api/external-providers', externalProviderRoutes);
+app.use('/api/synced-data', syncedDataRoutes);
 app.use('/api/integrations/garmin', garminRoutes);
 app.use('/api/withings', withingsRoutes);
 app.use('/api/version', versionRoutes);
@@ -438,6 +529,10 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/admin/auth', (req, res, next) => adminAuthRoutes(req, res, next));
 app.use('/api/water-containers', waterContainerRoutes);
 app.use('/api/v2/measurements', waterIntakeRoutesV2);
+app.use('/api/v2/medications', medicationRoutesV2);
+app.use('/api/v2/symptoms', symptomRoutesV2);
+app.use('/api/v2/cycle', cycleRoutesV2);
+app.use('/api/v2/pregnancy', pregnancyRoutesV2);
 app.use('/api/workout-presets', workoutPresetRoutes);
 app.use('/api/workout-plan-templates', workoutPlanTemplateRoutes);
 app.use('/api/review', reviewRoutes);
@@ -458,14 +553,7 @@ app.get(
 );
 app.get('/api/api-docs/json', (_req, res) => res.json(swaggerSpecs));
 app.get('/api/api-docs', (_req, res) => res.redirect('/api/api-docs/swagger'));
-// Backup scheduling
-const scheduleBackups = async () => {
-  cron.schedule('0 2 * * *', async () => {
-    const result = await performBackup();
-    // @ts-expect-error TS2554
-    if (result.success) await applyRetentionPolicy(7);
-  });
-};
+// Backup scheduling is handled by services/backupScheduler.ts
 // Session cleanup scheduling
 const scheduleSessionCleanup = async () => {
   // Run every day at 3 AM
@@ -475,145 +563,224 @@ const scheduleSessionCleanup = async () => {
     } catch (error) {
       console.error('[CRON] Session cleanup failed:', error);
     }
+    try {
+      const removed = await deleteExpiredTickets();
+      if (removed > 0) {
+        log(
+          'info',
+          `[CRON] Removed ${removed} used/expired passkey ticket(s).`
+        );
+      }
+    } catch (error) {
+      console.error('[CRON] Passkey ticket cleanup failed:', error);
+    }
   });
 };
 // Withings sync
 const scheduleWithingsSyncs = async () => {
   cron.schedule('0 * * * *', async () => {
-    const withingsProviders =
-      await externalProviderRepository.getProvidersByType('withings');
-    for (const provider of withingsProviders) {
-      if (provider.is_active && provider.sync_frequency !== 'manual') {
-        try {
-          await withingsServiceCentral.syncWithingsData(
-            provider.user_id,
-            'scheduled'
-          );
-          await externalProviderRepository.updateProviderLastSync(
-            provider.id,
-            new Date()
-          );
-        } catch (error) {
-          console.error(
-            `[CRON] Withings sync failed for user ${provider.user_id}:`,
-            error
-          );
+    try {
+      const withingsProviders =
+        await externalProviderRepository.getProvidersByType('withings');
+      for (const provider of withingsProviders) {
+        if (provider.is_active && provider.sync_frequency !== 'manual') {
+          try {
+            await withingsServiceCentral.syncWithingsData(
+              provider.user_id,
+              'scheduled'
+            );
+            await externalProviderRepository.updateProviderLastSync(
+              provider.id,
+              new Date()
+            );
+          } catch (error) {
+            console.error(
+              `[CRON] Withings sync failed for user ${provider.user_id}:`,
+              error
+            );
+          }
         }
       }
+    } catch (error) {
+      console.error('[CRON] scheduleWithingsSyncs task failed:', error);
     }
   });
 };
 // Garmin sync
 const scheduleGarminSyncs = async () => {
   cron.schedule('0 * * * *', async () => {
-    const providers =
-      await externalProviderRepository.getProvidersByType('garmin');
-    for (const provider of providers) {
-      if (provider.is_active && provider.sync_frequency !== 'manual') {
-        try {
-          await garminService.syncGarminData(provider.user_id, 'scheduled');
-          await externalProviderRepository.updateProviderLastSync(
-            provider.id,
-            new Date()
-          );
-        } catch (error) {
-          console.error(
-            `[CRON] Garmin sync failed for user ${provider.user_id}:`,
-            error
-          );
+    try {
+      const providers =
+        await externalProviderRepository.getProvidersByType('garmin');
+      for (const provider of providers) {
+        if (provider.is_active && provider.sync_frequency !== 'manual') {
+          try {
+            const result = await garminService.syncGarminData(
+              provider.user_id,
+              'scheduled'
+            );
+            const failedPhases = getGarminSyncPhaseErrors(result);
+            if (failedPhases.length === 0) {
+              await externalProviderRepository.updateProviderLastSync(
+                provider.id,
+                new Date()
+              );
+            } else {
+              console.warn(
+                `[CRON] Garmin sync completed with failed phases for user ${provider.user_id}; last_sync_at not updated: ${failedPhases.join(', ')}`
+              );
+            }
+          } catch (error) {
+            console.error(
+              `[CRON] Garmin sync failed for user ${provider.user_id}:`,
+              error
+            );
+          }
         }
       }
+    } catch (error) {
+      console.error('[CRON] scheduleGarminSyncs task failed:', error);
     }
   });
 };
 // Fitbit sync
 const scheduleFitbitSyncs = async () => {
   cron.schedule('0 * * * *', async () => {
-    const fitbitProviders =
-      await externalProviderRepository.getProvidersByType('fitbit');
-    for (const provider of fitbitProviders) {
-      if (provider.is_active && provider.sync_frequency !== 'manual') {
-        await fitbitService.syncFitbitData(provider.user_id, 'scheduled');
-        await externalProviderRepository.updateProviderLastSync(
-          provider.id,
-          new Date()
-        );
+    try {
+      const fitbitProviders =
+        await externalProviderRepository.getProvidersByType('fitbit');
+      for (const provider of fitbitProviders) {
+        if (provider.is_active && provider.sync_frequency !== 'manual') {
+          try {
+            await fitbitService.syncFitbitData(provider.user_id, 'scheduled');
+            await externalProviderRepository.updateProviderLastSync(
+              provider.id,
+              new Date()
+            );
+          } catch (error) {
+            console.error(
+              `[CRON] Fitbit sync failed for user ${provider.user_id}:`,
+              error
+            );
+          }
+        }
       }
+    } catch (error) {
+      console.error('[CRON] scheduleFitbitSyncs task failed:', error);
     }
   });
 };
 // Strava sync
 const scheduleStravaSyncs = async () => {
   cron.schedule('0 * * * *', async () => {
-    const stravaProviders =
-      await externalProviderRepository.getProvidersByType('strava');
-    for (const provider of stravaProviders) {
-      if (provider.is_active && provider.sync_frequency !== 'manual') {
-        try {
-          await stravaService.syncStravaData(provider.user_id, 'scheduled');
-          await externalProviderRepository.updateProviderLastSync(
-            provider.id,
-            new Date()
-          );
-        } catch (error) {
-          console.error(
-            `[CRON] Strava sync failed for user ${provider.user_id}:`,
-            error
-          );
+    try {
+      const stravaProviders =
+        await externalProviderRepository.getProvidersByType('strava');
+      for (const provider of stravaProviders) {
+        if (provider.is_active && provider.sync_frequency !== 'manual') {
+          try {
+            await stravaService.syncStravaData(provider.user_id, 'scheduled');
+            await externalProviderRepository.updateProviderLastSync(
+              provider.id,
+              new Date()
+            );
+          } catch (error) {
+            console.error(
+              `[CRON] Strava sync failed for user ${provider.user_id}:`,
+              error
+            );
+          }
         }
       }
+    } catch (error) {
+      console.error('[CRON] scheduleStravaSyncs task failed:', error);
     }
   });
 };
 // Polar sync
 const schedulePolarSyncs = async () => {
   cron.schedule('0 * * * *', async () => {
-    const polarProviders =
-      await externalProviderRepository.getProvidersByType('polar');
-    for (const provider of polarProviders) {
-      if (provider.is_active && provider.sync_frequency !== 'manual') {
-        try {
-          await polarService.syncPolarData(
-            provider.user_id,
-            'scheduled',
-            provider.id
-          );
-          await externalProviderRepository.updateProviderLastSync(
-            provider.id,
-            new Date()
-          );
-        } catch (error) {
-          console.error(
-            `[CRON] Polar sync failed for user ${provider.user_id}:`,
-            error
-          );
+    try {
+      const polarProviders =
+        await externalProviderRepository.getProvidersByType('polar');
+      for (const provider of polarProviders) {
+        if (provider.is_active && provider.sync_frequency !== 'manual') {
+          try {
+            await polarService.syncPolarData(
+              provider.user_id,
+              'scheduled',
+              provider.id
+            );
+            await externalProviderRepository.updateProviderLastSync(
+              provider.id,
+              new Date()
+            );
+          } catch (error) {
+            console.error(
+              `[CRON] Polar sync failed for user ${provider.user_id}:`,
+              error
+            );
+          }
         }
       }
+    } catch (error) {
+      console.error('[CRON] schedulePolarSyncs task failed:', error);
     }
   });
 };
 const scheduleGoogleHealthSyncs = async () => {
   cron.schedule('0 * * * *', async () => {
-    const providers =
-      await externalProviderRepository.getProvidersByType('googlehealth');
-    for (const provider of providers) {
-      if (provider.is_active && provider.sync_frequency !== 'manual') {
-        try {
-          await googleHealthService.syncGoogleHealthData(
-            provider.user_id,
-            'scheduled'
-          );
-          await externalProviderRepository.updateProviderLastSync(
-            provider.id,
-            new Date()
-          );
-        } catch (error) {
-          console.error(
-            `[CRON] Google Health sync failed for user ${provider.user_id}:`,
-            error
-          );
+    try {
+      const providers =
+        await externalProviderRepository.getProvidersByType('googlehealth');
+      for (const provider of providers) {
+        if (provider.is_active && provider.sync_frequency !== 'manual') {
+          try {
+            await googleHealthService.syncGoogleHealthData(
+              provider.user_id,
+              'scheduled'
+            );
+            await externalProviderRepository.updateProviderLastSync(
+              provider.id,
+              new Date()
+            );
+          } catch (error) {
+            console.error(
+              `[CRON] Google Health sync failed for user ${provider.user_id}:`,
+              error
+            );
+          }
         }
       }
+    } catch (error) {
+      console.error('[CRON] scheduleGoogleHealthSyncs task failed:', error);
+    }
+  });
+};
+const scheduleHevySyncs = async () => {
+  cron.schedule('0 * * * *', async () => {
+    try {
+      const hevyProviders =
+        await externalProviderRepository.getProvidersByType('hevy');
+      for (const provider of hevyProviders) {
+        if (provider.is_active && provider.sync_frequency !== 'manual') {
+          try {
+            await hevyService.syncHevyData(
+              provider.user_id,
+              provider.user_id,
+              false,
+              provider.id
+            );
+          } catch (error) {
+            console.error(
+              `[CRON] Hevy sync failed for user ${provider.user_id}:`,
+              error
+            );
+          }
+        }
+      }
+    } catch (error) {
+      console.error('[CRON] scheduleHevySyncs task failed:', error);
     }
   });
 };
@@ -635,7 +802,7 @@ applyMigrations()
         console.error('[AUTH] Post-init SSO sync failed:', err)
       );
     }
-    scheduleBackups();
+    scheduleBackupsOnStartup();
     scheduleSessionCleanup();
     scheduleWithingsSyncs();
     scheduleGarminSyncs();
@@ -643,6 +810,7 @@ applyMigrations()
     schedulePolarSyncs();
     scheduleStravaSyncs();
     scheduleGoogleHealthSyncs();
+    scheduleHevySyncs();
     if (process.env.SPARKY_FITNESS_ADMIN_EMAIL) {
       const adminUser = await userRepository.findUserByEmail(
         process.env.SPARKY_FITNESS_ADMIN_EMAIL

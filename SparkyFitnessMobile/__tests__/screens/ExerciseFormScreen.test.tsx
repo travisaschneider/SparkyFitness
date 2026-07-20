@@ -1,5 +1,6 @@
 import React from 'react';
 import { fireEvent, render, waitFor } from '@testing-library/react-native';
+import { pressAction } from './helpers/nativeHeaderTestUtils';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import Toast from 'react-native-toast-message';
 import { CommonActions } from '@react-navigation/native';
@@ -52,6 +53,18 @@ jest.mock('../../src/components/BottomSheetPicker', () => {
     ),
   };
 });
+
+const mockNavigation = {
+  setOptions: jest.fn(),
+  goBack: jest.fn(),
+  replace: jest.fn(),
+  dispatch: jest.fn(),
+  navigate: jest.fn(),
+} as any;
+jest.mock('@react-navigation/native', () => ({
+  ...jest.requireActual('@react-navigation/native'),
+  useNavigation: () => mockNavigation,
+}));
 
 const mockUseCreateExercise = useCreateExercise as jest.MockedFunction<typeof useCreateExercise>;
 const mockUseUpdateExercise = useUpdateExercise as jest.MockedFunction<typeof useUpdateExercise>;
@@ -220,12 +233,7 @@ describe('ExerciseFormScreen — buildEditPayload', () => {
 });
 
 describe('ExerciseFormScreen — create mode', () => {
-  const navigation = {
-    goBack: jest.fn(),
-    replace: jest.fn(),
-    dispatch: jest.fn(),
-    navigate: jest.fn(),
-  } as any;
+  const navigation = mockNavigation;
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -251,7 +259,7 @@ describe('ExerciseFormScreen — create mode', () => {
       </SafeAreaProvider>,
     );
 
-    fireEvent.press(screen.getByText('Save'));
+    pressAction(screen, navigation, 'Save');
 
     await waitFor(() => {
       expect(Toast.show).toHaveBeenCalledWith(
@@ -262,12 +270,7 @@ describe('ExerciseFormScreen — create mode', () => {
 });
 
 describe('ExerciseFormScreen — edit mode', () => {
-  const navigation = {
-    goBack: jest.fn(),
-    replace: jest.fn(),
-    dispatch: jest.fn(),
-    navigate: jest.fn(),
-  } as any;
+  const navigation = mockNavigation;
 
   const updateExerciseAsync = jest.fn();
 
@@ -300,7 +303,7 @@ describe('ExerciseFormScreen — edit mode', () => {
       </SafeAreaProvider>,
     );
 
-    fireEvent.press(screen.getByText('Save Changes'));
+    pressAction(screen, navigation, 'Save');
 
     await waitFor(() => {
       expect(navigation.goBack).toHaveBeenCalled();
@@ -329,7 +332,7 @@ describe('ExerciseFormScreen — edit mode', () => {
     const nameInput = screen.getByPlaceholderText('e.g. Bulgarian Split Squat');
     fireEvent.changeText(nameInput, 'Bench Press 2');
 
-    fireEvent.press(screen.getByText('Save Changes'));
+    pressAction(screen, navigation, 'Save');
 
     await waitFor(() => {
       expect(updateExerciseAsync).toHaveBeenCalledWith({

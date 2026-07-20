@@ -15,6 +15,7 @@ import type {
   RootStackScreenProps,
 } from '../types/navigation';
 import type { CreateExercisePayload, UpdateExercisePayload } from '../services/api/exerciseApi';
+import { SAVE_LABEL, SAVING_LABEL } from '../hooks/useScreenHeader';
 
 const CATEGORY_OPTIONS = [
   { label: 'General', value: 'general' },
@@ -412,8 +413,8 @@ const CreateExerciseMode: React.FC<CreateExerciseModeProps> = ({ navigation }) =
   return (
     <FormScreenChrome
       title="New Exercise"
-      saveLabel="Save"
-      savingLabel="Saving…"
+      saveLabel={SAVE_LABEL}
+      savingLabel={SAVING_LABEL}
       isSaving={isPending}
       onSave={() => {
         void handleSave();
@@ -556,8 +557,8 @@ const EditExerciseMode: React.FC<EditExerciseModeProps> = ({
   return (
     <FormScreenChrome
       title="Edit Exercise"
-      saveLabel="Save Changes"
-      savingLabel="Saving…"
+      saveLabel={SAVE_LABEL}
+      savingLabel={SAVING_LABEL}
       isSaving={isPending}
       onSave={() => {
         void handleSave();

@@ -98,6 +98,7 @@ function createMeal(id: string, name: string, calories: number) {
 describe('LibraryScreen', () => {
   const navigation = {
     navigate: jest.fn(),
+    addListener: jest.fn(() => jest.fn()),
   } as any;
 
   const route = {
@@ -305,6 +306,16 @@ describe('LibraryScreen', () => {
     const screen = renderScreen();
     fireEvent.press(screen.getByText('Workout presets'));
     expect(navigation.navigate).toHaveBeenCalledWith('WorkoutPresetsLibrary');
+  });
+
+  it('does not queue multiple create screens during the same navigation transition', () => {
+    const screen = renderScreen();
+
+    fireEvent.press(screen.getByText('Meal'));
+    fireEvent.press(screen.getByText('Workout preset'));
+
+    expect(navigation.navigate).toHaveBeenCalledTimes(1);
+    expect(navigation.navigate).toHaveBeenCalledWith('MealAdd');
   });
 
   it('shows the workout presets count from the API', async () => {

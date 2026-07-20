@@ -83,7 +83,7 @@ describe('mealRepository', () => {
       );
       // pg-format creates a single formatted string, not array parameters
       expect(mockClient.query).toHaveBeenCalledWith(
-        expect.stringMatching(/INSERT INTO meal_foods.*VALUES/)
+        expect.stringMatching(/INSERT INTO meal_foods[\s\S]*VALUES/)
       );
       expect(mockClient.query).toHaveBeenCalledWith('COMMIT');
       expect(result).toEqual({
@@ -131,16 +131,12 @@ describe('mealRepository', () => {
         .mockResolvedValueOnce({ rows: [] }); // For meal 2 foods
       const result = await mealRepository.getMeals(userId, 'all');
       expect(mockClient.query).toHaveBeenCalledWith(
-        expect.stringContaining('AND (user_id = $1 OR is_public = TRUE)'),
-        [userId]
+        expect.stringContaining('FROM meals'),
+        []
       );
       expect(mockClient.query).toHaveBeenCalledWith(
-        expect.stringContaining('WHERE mf.meal_id = $1'),
-        [mealId1]
-      );
-      expect(mockClient.query).toHaveBeenCalledWith(
-        expect.stringContaining('WHERE mf.meal_id = $1'),
-        [mealId2]
+        expect.stringContaining('WHERE mf.meal_id = ANY($1::uuid[])'),
+        [[mealId1, mealId2]]
       );
       expect(result).toEqual([
         { ...mockMeals[0], foods: [] },
@@ -166,16 +162,12 @@ describe('mealRepository', () => {
         .mockResolvedValueOnce({ rows: [] }); // For meal 2 foods
       const result = await mealRepository.getMeals(userId, 'all');
       expect(mockClient.query).toHaveBeenCalledWith(
-        expect.stringContaining('AND (user_id = $1 OR is_public = TRUE)'),
-        [userId]
+        expect.stringContaining('FROM meals'),
+        []
       );
       expect(mockClient.query).toHaveBeenCalledWith(
-        expect.stringContaining('WHERE mf.meal_id = $1'),
-        [mealId1]
-      );
-      expect(mockClient.query).toHaveBeenCalledWith(
-        expect.stringContaining('WHERE mf.meal_id = $1'),
-        [mealId2]
+        expect.stringContaining('WHERE mf.meal_id = ANY($1::uuid[])'),
+        [[mealId1, mealId2]]
       );
       expect(result).toEqual([
         { ...mockMeals[0], foods: [] },
@@ -261,8 +253,8 @@ describe('mealRepository', () => {
         [mealId]
       );
       expect(mockClient.query).toHaveBeenCalledWith(
-        expect.stringContaining('FROM meal_foods mf'),
-        [mealId]
+        expect.stringContaining('WHERE mf.meal_id = ANY($1::uuid[])'),
+        [[mealId]]
       );
       expect(result).toEqual({ ...mockMeal, foods: mockMealFoods });
     });
@@ -393,7 +385,7 @@ describe('mealRepository', () => {
       );
       // pg-format creates a single formatted string, not array parameters
       expect(mockClient.query).toHaveBeenCalledWith(
-        expect.stringMatching(/INSERT INTO meal_foods.*VALUES/)
+        expect.stringMatching(/INSERT INTO meal_foods[\s\S]*VALUES/)
       );
       expect(mockClient.query).toHaveBeenCalledWith('COMMIT');
       expect(result).toEqual({

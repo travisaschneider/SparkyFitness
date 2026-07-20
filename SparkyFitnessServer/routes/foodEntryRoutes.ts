@@ -3,6 +3,8 @@ import { authenticate } from '../middleware/authMiddleware.js';
 import checkPermissionMiddleware from '../middleware/checkPermissionMiddleware.js';
 import foodEntryService from '../services/foodEntryService.js';
 import { canAccessUserData } from '../utils/permissionUtils.js';
+import { clearUserTdeeCache } from '../services/AdaptiveTdeeService.js';
+import { isEntryTimeString } from '@workspace/shared';
 const router = express.Router();
 router.use(express.json());
 // Apply diary permission check to all food entry routes
@@ -88,6 +90,16 @@ router.post(
 
       const targetUserId = req.body.user_id || req.userId;
 
+      if (
+        req.body.entry_time !== null &&
+        req.body.entry_time !== undefined &&
+        !isEntryTimeString(req.body.entry_time)
+      ) {
+        return res.status(400).json({
+          error: 'entry_time must be in HH:MM (24h) format.',
+        });
+      }
+
       if (req.body.user_id && req.body.user_id !== req.userId) {
         const hasPermission = await { canAccessUserData }.canAccessUserData(
           req.body.user_id,
@@ -108,6 +120,7 @@ router.post(
         req.originalUserId || req.userId,
         req.body
       );
+      clearUserTdeeCache(targetUserId);
       res.status(201).json(newEntry);
     } catch (error) {
       // @ts-expect-error TS(2571): Object is of type 'unknown'.
@@ -179,6 +192,179 @@ router.post(
         targetDate,
         targetMealType
       );
+      clearUserTdeeCache(req.userId);
+      res.status(201).json(copiedEntries);
+    } catch (error) {
+      // @ts-expect-error TS(2571): Object is of type 'unknown'.
+      if (error.message.startsWith('Forbidden')) {
+        // @ts-expect-error TS(2571): Object is of type 'unknown'.
+        return res.status(403).json({ error: error.message });
+      }
+      next(error);
+    }
+  }
+);
+/**
+ * @swagger
+ * /food-entries/copy-from-user:
+ *   post:
+ *     summary: Copy food entries from a family member's diary to the active user's diary
+ *     tags: [Nutrition & Meals]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - familyUserId
+ *               - sourceDate
+ *               - sourceMealType
+ *               - targetDate
+ *               - targetMealType
+ *             properties:
+ *               familyUserId:
+ *                 type: string
+ *                 format: uuid
+ *               sourceDate:
+ *                 type: string
+ *                 format: date
+ *               sourceMealType:
+ *                 type: string
+ *               targetDate:
+ *                 type: string
+ *                 format: date
+ *               targetMealType:
+ *                 type: string
+ *     responses:
+ *       201:
+ *         description: Successfully copied entries
+ *       400:
+ *         description: Missing fields
+ *       403:
+ *         description: Forbidden
+ */
+router.post(
+  '/copy-from-user',
+  authenticate,
+  checkPermissionMiddleware('diary'),
+  async (req, res, next) => {
+    try {
+      const {
+        familyUserId,
+        sourceDate,
+        sourceMealType,
+        targetDate,
+        targetMealType,
+      } = req.body;
+      if (
+        !familyUserId ||
+        !sourceDate ||
+        !sourceMealType ||
+        !targetDate ||
+        !targetMealType
+      ) {
+        return res.status(400).json({
+          error:
+            'familyUserId, sourceDate, sourceMealType, targetDate, and targetMealType are required.',
+        });
+      }
+      const copiedEntries = await foodEntryService.copyFoodEntriesFromUser(
+        req.userId,
+        req.originalUserId || req.userId,
+        familyUserId,
+        sourceDate,
+        sourceMealType,
+        targetDate,
+        targetMealType
+      );
+      clearUserTdeeCache(req.userId);
+      res.status(201).json(copiedEntries);
+    } catch (error) {
+      // @ts-expect-error TS(2571): Object is of type 'unknown'.
+      if (error.message.startsWith('Forbidden')) {
+        // @ts-expect-error TS(2571): Object is of type 'unknown'.
+        return res.status(403).json({ error: error.message });
+      }
+      next(error);
+    }
+  }
+);
+/**
+ * @swagger
+ * /food-entries/copy-to-user:
+ *   post:
+ *     summary: Copy food entries from the active user's diary to a family member's diary
+ *     tags: [Nutrition & Meals]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - familyUserId
+ *               - sourceDate
+ *               - sourceMealType
+ *               - targetDate
+ *               - targetMealType
+ *             properties:
+ *               familyUserId:
+ *                 type: string
+ *                 format: uuid
+ *               sourceDate:
+ *                 type: string
+ *                 format: date
+ *               sourceMealType:
+ *                 type: string
+ *               targetDate:
+ *                 type: string
+ *                 format: date
+ *               targetMealType:
+ *                 type: string
+ *     responses:
+ *       201:
+ *         description: Successfully copied entries
+ *       400:
+ *         description: Missing fields
+ *       403:
+ *         description: Forbidden
+ */
+router.post(
+  '/copy-to-user',
+  authenticate,
+  checkPermissionMiddleware('diary'),
+  async (req, res, next) => {
+    try {
+      const {
+        familyUserId,
+        sourceDate,
+        sourceMealType,
+        targetDate,
+        targetMealType,
+      } = req.body;
+      if (
+        !familyUserId ||
+        !sourceDate ||
+        !sourceMealType ||
+        !targetDate ||
+        !targetMealType
+      ) {
+        return res.status(400).json({
+          error:
+            'familyUserId, sourceDate, sourceMealType, targetDate, and targetMealType are required.',
+        });
+      }
+      const copiedEntries = await foodEntryService.copyFoodEntriesToUser(
+        req.userId,
+        req.originalUserId || req.userId,
+        familyUserId,
+        sourceDate,
+        sourceMealType,
+        targetDate,
+        targetMealType
+      );
+      clearUserTdeeCache(familyUserId);
       res.status(201).json(copiedEntries);
     } catch (error) {
       // @ts-expect-error TS(2571): Object is of type 'unknown'.
@@ -239,6 +425,7 @@ router.post(
         mealType,
         targetDate
       );
+      clearUserTdeeCache(req.userId);
       res.status(201).json(copiedEntries);
     } catch (error) {
       // @ts-expect-error TS(2571): Object is of type 'unknown'.
@@ -300,6 +487,7 @@ router.post(
         sourceDate,
         targetDate
       );
+      clearUserTdeeCache(req.userId);
       res.status(201).json(copiedEntries);
     } catch (error) {
       next(error);
@@ -348,6 +536,7 @@ router.post(
           req.originalUserId || req.userId,
           targetDate
         );
+      clearUserTdeeCache(req.userId);
       res.status(201).json(copiedEntries);
     } catch (error) {
       next(error);
@@ -398,6 +587,15 @@ router.put(
     if (!id) {
       return res.status(400).json({ error: 'Food entry ID is required.' });
     }
+    if (
+      req.body.entry_time !== null &&
+      req.body.entry_time !== undefined &&
+      !isEntryTimeString(req.body.entry_time)
+    ) {
+      return res.status(400).json({
+        error: 'entry_time must be in HH:MM (24h) format.',
+      });
+    }
     try {
       const updatedEntry = await foodEntryService.updateFoodEntry(
         req.userId,
@@ -406,6 +604,7 @@ router.put(
         id,
         req.body
       );
+      clearUserTdeeCache(req.userId);
       res.status(200).json(updatedEntry);
     } catch (error) {
       // @ts-expect-error TS(2571): Object is of type 'unknown'.
@@ -461,6 +660,7 @@ router.delete(
     try {
       // @ts-expect-error TS(2339): Property 'userId' does not exist on type 'Request<... Remove this comment to see the full error message
       await foodEntryService.deleteFoodEntry(req.userId, id, req.userId);
+      clearUserTdeeCache(req.userId);
       res.status(200).json({ message: 'Food entry deleted successfully.' });
     } catch (error) {
       // @ts-expect-error TS(2571): Object is of type 'unknown'.

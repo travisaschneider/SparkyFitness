@@ -10,6 +10,8 @@ import StatusView from '../components/StatusView';
 import SettingsRow, { SettingsRowGroup } from '../components/SettingsRow';
 import { useActiveWorkoutBarPadding } from '../components/ActiveWorkoutBar';
 import { useDeleteFood, useFoodVariants, useProfile, useServerConnection, usePreferences } from '../hooks';
+import { useScreenHeader } from '../hooks/useScreenHeader';
+import { useNativeIOSHeadersActive } from '../services/nativeTabBarPreference';
 import {
   buildExternalVariantOptions,
   buildLocalVariantOptions,
@@ -27,6 +29,7 @@ const buildSelectedVariantId = (hasExternalVariants: boolean, variantId?: string
 const FoodDetailScreen: React.FC<FoodDetailScreenProps> = ({ navigation, route }) => {
   const { item, updatedItem, updatedSelectedVariantId, updatedBarcode } = route.params;
   const insets = useSafeAreaInsets();
+  const usesNativeHeader = useNativeIOSHeadersActive();
   const activeWorkoutBarPadding = useActiveWorkoutBarPadding('stack');
   const [accentColor, textPrimary] = useCSSVariable([
     '--color-accent-primary',
@@ -156,6 +159,22 @@ const FoodDetailScreen: React.FC<FoodDetailScreenProps> = ({ navigation, route }
     });
   };
 
+  const header = useScreenHeader({
+    borderless: true,
+    left: { kind: 'back' },
+    right: canManageFood
+      ? {
+          kind: 'text',
+          label: 'Edit',
+          role: 'secondary',
+          disabled: !selectedVariantId,
+          onPress: handleEdit,
+          accessibilityLabel: 'Edit food',
+          identifier: 'food-detail-edit',
+        }
+      : null,
+  });
+
   const renderContent = () => {
     if (!isConnectionLoading && !isConnected) {
       return (
@@ -185,6 +204,8 @@ const FoodDetailScreen: React.FC<FoodDetailScreenProps> = ({ navigation, route }
           brand={food.brand}
           values={displayValues}
           showNetCarbs={showNetCarbs}
+          provider_verified={food.provider_verified}
+          customNutrients={selectedCustomNutrients}
         />
 
         <View className="bg-surface rounded-xl p-4">
@@ -280,28 +301,8 @@ const FoodDetailScreen: React.FC<FoodDetailScreenProps> = ({ navigation, route }
   };
 
   return (
-    <View className="flex-1 bg-background" style={{ paddingTop: insets.top }}>
-      <View className="flex-row items-center px-4 py-3 border-b border-border-subtle">
-        <TouchableOpacity
-          onPress={() => navigation.goBack()}
-          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-        >
-          <Icon name="chevron-back" size={22} color={accentColor} />
-        </TouchableOpacity>
-        {canManageFood && (
-          <View className="ml-auto">
-            <Button
-              variant="ghost"
-              onPress={handleEdit}
-              disabled={!selectedVariantId}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              textClassName="font-medium"
-            >
-              Edit
-            </Button>
-          </View>
-        )}
-      </View>
+    <View className="flex-1 bg-background" style={usesNativeHeader ? undefined : { paddingTop: insets.top }}>
+      {header}
       {renderContent()}
     </View>
   );

@@ -4,6 +4,9 @@ import { useCSSVariable } from 'uniwind';
 
 import Icon from './Icon';
 import { navigationRef } from './ActiveWorkoutBar';
+import LiquidGlassSurface, {
+  createLiquidGlassPillStyle,
+} from './LiquidGlassSurface';
 import { useActiveWorkoutStore } from '../stores/activeWorkoutStore';
 import {
   WHATS_NEW_CONTENT_VERSION,
@@ -20,26 +23,32 @@ const FAB_CLEARANCE = 20;
 
 type Phase = 'evaluating' | 'eligible' | 'dismissed' | 'ineligible';
 
-const WhatsNewBanner: React.FC = () => {
-  const workoutActive = useActiveWorkoutStore((s) => s.sessionId !== null);
+type WhatsNewBannerProps = {
+  reserveAddButtonClearance?: boolean;
+  presentation?: 'legacy' | 'glass';
+};
+
+export type WhatsNewBannerState = {
+  visible: boolean;
+  dismiss: () => void;
+  open: () => void;
+};
+
+export function useWhatsNewBannerState(): WhatsNewBannerState {
+  const workoutActive = useActiveWorkoutStore(s => s.sessionId !== null);
   const [phase, setPhase] = useState<Phase>('evaluating');
   const [resetTick, setResetTick] = useState(0);
   const contentVersion = String(WHATS_NEW_CONTENT_VERSION);
 
-  // Dev Tools can clear `lastSeenVersion` at runtime — bump the tick so the
-  // evaluation effect below re-runs and the banner can re-appear without
-  // restarting the app.
   useEffect(
-    () => subscribeToWhatsNewBannerReset(() => setResetTick((t) => t + 1)),
+    () => subscribeToWhatsNewBannerReset(() => setResetTick(t => t + 1)),
     [],
   );
 
-  const [accentPrimary, textMuted] = useCSSVariable([
-    '--color-accent-primary',
-    '--color-text-muted',
-  ]) as [string, string];
-
   useEffect(() => {
+    // Async evaluation effect: reset to the loading phase before the async
+    // version lookup below resolves to eligible/ineligible.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setPhase('evaluating');
     let cancelled = false;
     void (async () => {
@@ -49,19 +58,11 @@ const WhatsNewBanner: React.FC = () => {
         setPhase('ineligible');
         return;
       }
-      // Pre-marker builds stamped the app version here (e.g. "1.4.0"); markers
-      // are plain integers, so a "." means this user has already seen the
-      // current cards. Migrate their stamp (so future content bumps still reach
-      // them) and suppress this time.
       if (lastSeen?.includes('.')) {
         void markWhatsNewVersionSeen(contentVersion);
         setPhase('ineligible');
         return;
       }
-      // A null lastSeen means this user is upgrading from a pre-banner build.
-      // Fresh installs are stamped via `markCurrentVersionSeen` on onboarding
-      // completion, so by the time the banner mounts on Tabs, null can only
-      // mean an in-place upgrade — show the banner.
       setPhase('eligible');
     })();
     return () => {
@@ -69,43 +70,96 @@ const WhatsNewBanner: React.FC = () => {
     };
   }, [contentVersion, resetTick]);
 
-  // Mark the version seen as soon as the banner actually renders — a banner
-  // the user ignores still consumes the prompt, so we don't re-pester next
-  // launch. Skipped while a workout is active so launching with an in-flight
-  // workout doesn't burn the prompt without ever displaying.
-  const shouldRender = phase === 'eligible' && !workoutActive;
+  const visible = phase === 'eligible' && !workoutActive;
   useEffect(() => {
-    if (shouldRender) {
+    if (visible) {
       void markWhatsNewVersionSeen(contentVersion);
     }
-  }, [shouldRender, contentVersion]);
+  }, [visible, contentVersion]);
 
-  if (!shouldRender) return null;
-
-  const handleTap = () => {
+  const dismiss = () => setPhase('dismissed');
+  const open = () => {
     setPhase('dismissed');
     if (navigationRef.isReady()) {
       navigationRef.navigate('WhatsNew');
     }
   };
 
-  const handleDismiss = () => setPhase('dismissed');
+  return { visible, dismiss, open };
+}
+
+export const WhatsNewBannerContent: React.FC<
+  WhatsNewBannerProps & { state: WhatsNewBannerState }
+> = ({ reserveAddButtonClearance = false, presentation = 'legacy', state }) => {
+  const [accentPrimary, textMuted, chromeBorder] = useCSSVariable([
+    '--color-accent-primary',
+    '--color-text-muted',
+    '--color-chrome-border',
+  ]) as [string, string, string];
+
+  if (!state.visible) return null;
+
+  if (presentation === 'legacy') {
+    return (
+      <View
+        className="bg-chrome border-t border-chrome-border"
+        style={{ paddingBottom: reserveAddButtonClearance ? FAB_CLEARANCE : 0 }}
+      >
+        <Pressable
+          onPress={state.open}
+          accessibilityRole="button"
+          accessibilityLabel="See what's new in this update"
+          className="flex-row items-center px-4 py-3"
+        >
+          <View className="h-9 w-9 items-center justify-center rounded-full bg-accent-primary/15">
+            <Icon name="whats-new" size={20} color={accentPrimary} weight="bold" />
+          </View>
+          <View className="flex-1 px-3">
+            <Text className="text-sm font-semibold text-text-primary">
+              What&apos;s new
+            </Text>
+            <Text numberOfLines={1} className="text-xs text-text-secondary">
+              See what&apos;s improved in this update
+            </Text>
+          </View>
+          <Pressable
+            onPress={state.dismiss}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            accessibilityRole="button"
+            accessibilityLabel="Dismiss"
+            className="p-2"
+          >
+            <Icon name="close" size={20} color={textMuted} weight="bold" />
+          </Pressable>
+        </Pressable>
+      </View>
+    );
+  }
 
   return (
-    <View
-      className="bg-chrome border-t border-chrome-border"
-      style={{ paddingBottom: FAB_CLEARANCE }}
+    <LiquidGlassSurface
+      style={createLiquidGlassPillStyle(chromeBorder, {
+        paddingBottom: reserveAddButtonClearance ? FAB_CLEARANCE : 0,
+      })}
+      colorScheme="auto"
+      glassEffectStyle="regular"
+      isInteractive
     >
       <Pressable
-        onPress={handleTap}
+        onPress={state.open}
         accessibilityRole="button"
         accessibilityLabel="See what's new in this update"
-        className="flex-row items-center px-4 py-3"
+        className="flex-row items-center px-3 py-2"
       >
-        <View className="h-9 w-9 items-center justify-center rounded-full bg-accent-primary/15">
-          <Icon name="sparkle" size={20} color={accentPrimary} weight="bold" />
+        <View className="h-8 w-8 items-center justify-center rounded-full bg-accent-primary/15">
+          <Icon
+            name="whats-new"
+            size={18}
+            color={accentPrimary}
+            weight="bold"
+          />
         </View>
-        <View className="flex-1 px-3">
+        <View className="flex-1 px-2.5">
           <Text className="text-sm font-semibold text-text-primary">
             What&apos;s new
           </Text>
@@ -114,17 +168,22 @@ const WhatsNewBanner: React.FC = () => {
           </Text>
         </View>
         <Pressable
-          onPress={handleDismiss}
+          onPress={state.dismiss}
           hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
           accessibilityRole="button"
           accessibilityLabel="Dismiss"
-          className="p-2"
+          className="p-1.5"
         >
-          <Icon name="close" size={20} color={textMuted} weight="bold" />
+          <Icon name="close" size={18} color={textMuted} weight="bold" />
         </Pressable>
       </Pressable>
-    </View>
+    </LiquidGlassSurface>
   );
+};
+
+const WhatsNewBanner: React.FC<WhatsNewBannerProps> = props => {
+  const state = useWhatsNewBannerState();
+  return <WhatsNewBannerContent {...props} state={state} />;
 };
 
 export default WhatsNewBanner;

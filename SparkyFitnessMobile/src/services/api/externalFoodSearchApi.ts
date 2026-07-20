@@ -1,4 +1,5 @@
 import { apiFetch, normalizeUrl } from './apiClient';
+import { AI_TIMEOUT_MS } from '../../utils/concurrency';
 import type {
   FoodPhotoEstimateErrorCode,
   FoodPhotoEstimateResponse,
@@ -7,6 +8,7 @@ import { addLog } from '../LogService';
 import { getActiveServerConfig, proxyHeadersToRecord } from '../storage';
 import { getAuthHeaders, notifySessionExpired } from './authService';
 import type { ExternalFoodItem, ExternalFoodVariant, ExternalFoodSearchPagination, PaginatedExternalFoodSearchResult } from '../../types/externalFoods';
+import { selectDisplayVariant } from '../../utils/foodDetails';
 
 interface OpenFoodFactsProduct {
   product_name: string;
@@ -50,40 +52,9 @@ export function transformOpenFoodFactsProduct(product: OpenFoodFactsProduct): Ex
   };
 }
 
-export interface BarcodeFood {
-  id?: string;
-  name: string;
-  brand: string | null;
-  barcode?: string;
-  provider_external_id?: string | null;
-  provider_type?: string;
-  is_custom: boolean;
-  default_variant: {
-    id?: string;
-    serving_size: number;
-    serving_unit: string;
-    calories: number;
-    protein: number;
-    carbs: number;
-    fat: number;
-    saturated_fat?: number;
-    sodium?: number;
-    dietary_fiber?: number;
-    sugars?: number;
-    trans_fat?: number;
-    cholesterol?: number;
-    potassium?: number;
-    calcium?: number;
-    iron?: number;
-    vitamin_a?: number;
-    vitamin_c?: number;
-  };
-}
-
-export type BarcodeLookupResult =
-  | { source: 'local'; food: BarcodeFood & { id: string } }
-  | { source: string; food: BarcodeFood }
-  | { source: 'not_found'; food: null };
+// BarcodeFood, BarcodeLookupResult, and lookupBarcodeV2 are defined after
+// NormalizedFood / NormalizedFoodVariant below (line ~520) since they reference
+// those types. Forward-declare the legacy lookup function here.
 
 export async function lookupBarcode(barcode: string): Promise<BarcodeLookupResult> {
   return apiFetch<BarcodeLookupResult>({
@@ -438,6 +409,7 @@ interface NormalizedFoodVariant {
   id?: string;
   serving_size: number;
   serving_unit: string;
+  serving_description?: string;
   calories: number;
   protein: number;
   carbs: number;
@@ -468,9 +440,28 @@ interface NormalizedFood {
   provider_external_id?: string;
   provider_type?: string;
   is_custom: boolean;
+  provider_verified?: boolean;
   default_variant: NormalizedFoodVariant;
   variants?: NormalizedFoodVariant[];
 }
+
+export interface BarcodeFood {
+  id?: string;
+  name: string;
+  brand: string | null;
+  barcode?: string;
+  provider_external_id?: string | null;
+  provider_type?: string;
+  is_custom: boolean;
+  provider_verified?: boolean;
+  default_variant: NormalizedFoodVariant;
+  variants?: NormalizedFoodVariant[];
+}
+
+export type BarcodeLookupResult =
+  | { source: 'local'; food: BarcodeFood & { id: string } }
+  | { source: string; food: BarcodeFood }
+  | { source: 'not_found'; food: null };
 
 export function transformNormalizedFood(food: NormalizedFood, providerType: string): ExternalFoodItem {
   const dv = food.default_variant;
@@ -478,7 +469,7 @@ export function transformNormalizedFood(food: NormalizedFood, providerType: stri
   const mapVariant = (v: NormalizedFoodVariant): ExternalFoodVariant => ({
     serving_size: v.serving_size,
     serving_unit: v.serving_unit,
-    serving_description: `${v.serving_size} ${v.serving_unit}`,
+    serving_description: v.serving_description ?? `${v.serving_size} ${v.serving_unit}`,
     calories: v.calories,
     protein: v.protein,
     carbs: v.carbs,
@@ -496,20 +487,25 @@ export function transformNormalizedFood(food: NormalizedFood, providerType: stri
     vitamin_c: v.vitamin_c,
   });
 
-  // FoodEntryAddScreen selects ext-0 (first variant) by default, so the
-  // default variant must come first to keep search/add calories consistent.
-  const defaultFirst = food.variants
-    ? [dv, ...food.variants.filter((v) => v !== dv)]
-    : undefined;
-  const variants = defaultFirst?.map(mapVariant);
+  // FoodEntryAddScreen selects ext-0 (first variant) by default. Prefer the
+  // provider's named serving for display, but keep the 100g/100ml reference in
+  // the ordered list so it still imports and remains selectable.
+  const { displayVariant, orderedVariants } = selectDisplayVariant(dv, food.variants);
+  const variants = orderedVariants?.map(mapVariant);
 
   return {
     id: food.provider_external_id ?? food.id ?? '',
     name: food.name,
     brand: food.brand,
-    ...mapVariant(dv),
+    barcode: food.barcode,
+    provider_type: food.provider_type ?? providerType,
+    provider_external_id: food.provider_external_id,
+    is_custom: food.is_custom,
+    ...mapVariant(displayVariant),
+    serving_description: displayVariant.serving_description ?? `${displayVariant.serving_size} ${displayVariant.serving_unit}`,
     source: food.provider_type ?? providerType,
     variants: variants && variants.length > 0 ? variants : undefined,
+    provider_verified: food.provider_verified === true,
   };
 }
 
@@ -564,9 +560,12 @@ interface V2BarcodeResponse {
   food: NormalizedFood | null;
 }
 
-export async function lookupBarcodeV2(barcode: string): Promise<BarcodeLookupResult> {
+export async function lookupBarcodeV2(barcode: string, providerId?: string): Promise<BarcodeLookupResult> {
+  const params = new URLSearchParams();
+  if (providerId) params.set('providerId', providerId);
+  const qs = params.toString();
   const response = await apiFetch<V2BarcodeResponse>({
-    endpoint: `/api/v2/foods/barcode/${barcode}`,
+    endpoint: `/api/v2/foods/barcode/${barcode}${qs ? `?${qs}` : ''}`,
     serviceName: 'External Food Search',
     operation: 'barcode lookup (v2)',
   });
@@ -576,6 +575,10 @@ export async function lookupBarcodeV2(barcode: string): Promise<BarcodeLookupRes
   }
 
   const food = response.food;
+  const resolvedVariants =
+    food.variants && food.variants.length > 0
+      ? food.variants
+      : [food.default_variant];
   const barcodeFood: BarcodeFood = {
     id: food.id,
     name: food.name,
@@ -584,7 +587,9 @@ export async function lookupBarcodeV2(barcode: string): Promise<BarcodeLookupRes
     provider_external_id: food.provider_external_id,
     provider_type: food.provider_type,
     is_custom: food.is_custom,
+    provider_verified: food.provider_verified,
     default_variant: food.default_variant,
+    variants: resolvedVariants,
   };
 
   if (response.source === 'local') {
@@ -624,6 +629,7 @@ export async function scanNutritionLabel(base64Image: string, mimeType: string):
     operation: 'scan nutrition label',
     method: 'POST',
     body: { image: base64Image, mime_type: mimeType },
+    timeoutMs: AI_TIMEOUT_MS,
   });
 }
 

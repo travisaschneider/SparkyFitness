@@ -25,9 +25,10 @@ import { useCSSVariable } from 'uniwind';
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import { lookupBarcodeV2, scanNutritionLabel } from '../services/api/externalFoodSearchApi';
+import { selectDisplayVariant } from '../utils/foodDetails';
 import { getApiErrorMessage } from '../services/api/errors';
 import { fireSuccessHaptic } from '../services/haptics';
-import { useSoundsEnabled } from '../services/sounds';
+import { useAppPreferencesStore } from '../stores/appPreferencesStore';
 import { toFormString } from '../types/foodInfo';
 import { useActiveAiServiceSetting } from '../hooks/useActiveAiServiceSetting';
 import { isFoodPhotoAvailable } from '../services/api/aiSettingsApi';
@@ -62,7 +63,7 @@ const FoodScanScreen: React.FC<FoodScanScreenProps> = ({ navigation, route }) =>
   const insets = useSafeAreaInsets();
   const accentPrimary = String(useCSSVariable('--color-accent-primary'));
   const [permission, requestPermission] = useCameraPermissions();
-  const soundsEnabled = useSoundsEnabled();
+  const soundsEnabled = useAppPreferencesStore((s) => s.soundsEnabled);
   const [scanned, setScanned] = useState(false);
   const [loading, setLoading] = useState(false);
   const [flashlight, setFlashlight] = useState(false);
@@ -98,6 +99,7 @@ const FoodScanScreen: React.FC<FoodScanScreenProps> = ({ navigation, route }) =>
   const date = lookupParams?.date;
   const pickerMode = lookupParams?.pickerMode ?? 'log-entry';
   const returnDepth = lookupParams?.returnDepth;
+  const providerId = lookupParams?.providerId;
   const isMealBuilderMode = pickerMode === 'meal-builder';
 
   // Photo estimation always logs to the diary; hide it for meal-builder
@@ -141,17 +143,17 @@ const FoodScanScreen: React.FC<FoodScanScreenProps> = ({ navigation, route }) =>
     setNotFoundBarcode(null);
     setLookupError(null);
     try {
-      const result = await lookupBarcodeV2(barcode);
+      const result = await lookupBarcodeV2(barcode, providerId);
 
       if (!result.food) {
         setNotFoundBarcode(barcode);
-      } else if (result.food.id) {
+      } else if (result.source === 'local') {
         if (shouldFireSuccessHaptic) {
           fireSuccessHaptic();
         }
         const defaultVariant = result.food.default_variant;
         const item: FoodInfoItem = {
-          id: result.food.id,
+          id: result.food.id!,
           name: result.food.name,
           brand: result.food.brand,
           servingSize: defaultVariant.serving_size,
@@ -173,6 +175,7 @@ const FoodScanScreen: React.FC<FoodScanScreenProps> = ({ navigation, route }) =>
           vitaminC: defaultVariant.vitamin_c,
           variantId: defaultVariant.id,
           source: 'local',
+          provider_verified: result.food.provider_verified,
           originalItem: result.food,
         };
         navigation.replace('FoodEntryAdd', {
@@ -185,35 +188,61 @@ const FoodScanScreen: React.FC<FoodScanScreenProps> = ({ navigation, route }) =>
         if (shouldFireSuccessHaptic) {
           fireSuccessHaptic();
         }
-        const defaultVariant = result.food.default_variant;
-        navigation.replace(
-          'FoodForm',
-          buildFoodFormParams({
-            barcode,
-            providerType: result.source,
-            initialFood: {
-              name: result.food.name,
-              brand: result.food.brand ?? '',
-              servingSize: String(defaultVariant.serving_size),
-              servingUnit: defaultVariant.serving_unit,
-              calories: String(defaultVariant.calories),
-              protein: String(defaultVariant.protein),
-              carbs: String(defaultVariant.carbs),
-              fat: String(defaultVariant.fat),
-              fiber: toFormString(defaultVariant.dietary_fiber),
-              saturatedFat: toFormString(defaultVariant.saturated_fat),
-              sodium: toFormString(defaultVariant.sodium),
-              sugars: toFormString(defaultVariant.sugars),
-              transFat: toFormString(defaultVariant.trans_fat),
-              potassium: toFormString(defaultVariant.potassium),
-              cholesterol: toFormString(defaultVariant.cholesterol),
-              calcium: toFormString(defaultVariant.calcium),
-              iron: toFormString(defaultVariant.iron),
-              vitaminA: toFormString(defaultVariant.vitamin_a),
-              vitaminC: toFormString(defaultVariant.vitamin_c),
-            },
-          }),
-        );
+        const dv = result.food.default_variant;
+        const { displayVariant, orderedVariants } = selectDisplayVariant(dv, result.food.variants);
+        const item: FoodInfoItem = {
+          id: result.food.provider_external_id ?? result.food.id ?? '',
+          name: result.food.name,
+          brand: result.food.brand,
+          servingSize: displayVariant.serving_size,
+          servingUnit: displayVariant.serving_unit,
+          servingDescription: displayVariant.serving_description ?? `${displayVariant.serving_size} ${displayVariant.serving_unit}`,
+          calories: displayVariant.calories,
+          protein: displayVariant.protein,
+          carbs: displayVariant.carbs,
+          fat: displayVariant.fat,
+          fiber: displayVariant.dietary_fiber,
+          saturatedFat: displayVariant.saturated_fat,
+          sodium: displayVariant.sodium,
+          sugars: displayVariant.sugars,
+          transFat: displayVariant.trans_fat,
+          potassium: displayVariant.potassium,
+          calcium: displayVariant.calcium,
+          iron: displayVariant.iron,
+          cholesterol: displayVariant.cholesterol,
+          vitaminA: displayVariant.vitamin_a,
+          vitaminC: displayVariant.vitamin_c,
+          variantId: displayVariant.id,
+          source: 'external',
+          provider_verified: result.food.provider_verified,
+          externalVariants: orderedVariants?.map((v) => ({
+            serving_size: v.serving_size,
+            serving_unit: v.serving_unit,
+            serving_description: v.serving_description ?? `${v.serving_size} ${v.serving_unit}`,
+            calories: v.calories,
+            protein: v.protein,
+            carbs: v.carbs,
+            fat: v.fat,
+            saturated_fat: v.saturated_fat,
+            sodium: v.sodium,
+            fiber: v.dietary_fiber,
+            sugars: v.sugars,
+            trans_fat: v.trans_fat,
+            cholesterol: v.cholesterol,
+            potassium: v.potassium,
+            calcium: v.calcium,
+            iron: v.iron,
+            vitamin_a: v.vitamin_a,
+            vitamin_c: v.vitamin_c,
+          })),
+          originalItem: result.food,
+        };
+        navigation.replace('FoodEntryAdd', {
+          item,
+          date,
+          pickerMode: isMealBuilderMode ? 'meal-builder' : undefined,
+          returnDepth,
+        });
       }
     } catch (error) {
       const message =
@@ -475,12 +504,12 @@ const FoodScanScreen: React.FC<FoodScanScreenProps> = ({ navigation, route }) =>
         barcodeScannerSettings={scanMode === 'barcode' ? {
           barcodeTypes: ['ean13', 'ean8', 'upc_a', 'upc_e'],
         } : undefined}
-        style={StyleSheet.absoluteFillObject}
+        style={StyleSheet.absoluteFill}
         enableTorch={flashlight}
       />
 
       {scanMode === 'barcode' && !notFoundBarcode && !lookupError && !loading && !manualEntryVisible ? (
-        <View pointerEvents="none" style={StyleSheet.absoluteFillObject} className="justify-center items-center">
+        <View pointerEvents="none" style={StyleSheet.absoluteFill} className="justify-center items-center">
           <View style={{ width: GUIDE_WIDTH, height: GUIDE_HEIGHT, marginBottom: 120 }}>
             <View style={{ ...CORNER_STYLE, top: 0, left: 0, borderTopWidth: CORNER_BORDER, borderLeftWidth: CORNER_BORDER, borderTopLeftRadius: 4 }} />
             <View style={{ ...CORNER_STYLE, top: 0, right: 0, borderTopWidth: CORNER_BORDER, borderRightWidth: CORNER_BORDER, borderTopRightRadius: 4 }} />
@@ -525,7 +554,7 @@ const FoodScanScreen: React.FC<FoodScanScreenProps> = ({ navigation, route }) =>
 
       {capturedPhoto && !labelProcessing ? (
         <View className="absolute inset-0">
-          <Image source={{ uri: capturedPhoto.uri }} style={StyleSheet.absoluteFillObject} resizeMode="cover" />
+          <Image source={{ uri: capturedPhoto.uri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
           <View className="absolute bottom-12 left-4 right-4 flex-row gap-3" style={{ paddingBottom: insets.bottom }}>
             <TouchableOpacity
               onPress={handleRetake}
@@ -589,7 +618,7 @@ const FoodScanScreen: React.FC<FoodScanScreenProps> = ({ navigation, route }) =>
       ) : null}
 
       {scanMode === 'photo' && !capturedPhoto && !loading && !manualEntryVisible && !photoGateVisible && photoModeAvailable ? (
-        <View pointerEvents="none" style={StyleSheet.absoluteFillObject} className="justify-center items-center">
+        <View pointerEvents="none" style={StyleSheet.absoluteFill} className="justify-center items-center">
           <View
             style={{
               width: GUIDE_WIDTH,
@@ -619,8 +648,8 @@ const FoodScanScreen: React.FC<FoodScanScreenProps> = ({ navigation, route }) =>
               AI photo estimates aren&apos;t set up
             </Text>
             <Text className="text-text-secondary text-sm">
-              Open SparkyFitness in a browser and visit Settings → AI to add a
-              supported AI provider, then return here.
+              Open SparkyFitness in a browser and visit Settings → AI to add an
+              AI provider, then return here.
             </Text>
             <View className="gap-2 mt-2">
               <UIButton

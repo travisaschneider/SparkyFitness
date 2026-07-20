@@ -22,7 +22,7 @@ import BottomSheetPicker from '../components/BottomSheetPicker';
 import CalendarSheet, { type CalendarSheetRef } from '../components/CalendarSheet';
 import { normalizeDate, formatDateLabel } from '../utils/dateUtils';
 import { getMealTypeLabel } from '../constants/meals';
-import { useMealTypes, usePreferences } from '../hooks';
+import { useMealTypes, usePreferences, useServerConnection, useCustomNutrients } from '../hooks';
 import { useFoodVariants } from '../hooks/useFoodVariants';
 import { useDeleteFoodEntry } from '../hooks/useDeleteFoodEntry';
 import { useUpdateFoodEntry } from '../hooks/useUpdateFoodEntry';
@@ -38,12 +38,20 @@ import type {
   FoodUnitVariant,
 } from '../types/foodUnitVariants';
 import type { RootStackScreenProps } from '../types/navigation';
+import { useScreenHeader } from '../hooks/useScreenHeader';
+import { useNativeIOSHeadersActive } from '../services/nativeTabBarPreference';
 import {
-  formatVariantLabel,
   buildLocalUnitVariants,
+  convertEquivalentVariantQuantity,
+  formatServingSizeDisplay,
+  buildLocalVariantOptions,
+  formatServingUnit,
+  formatVariantLabel,
+  resolveLocalPickerVariantId,
   unitVariantToDisplayValues,
 } from '../utils/foodDetails';
 import { DECIMAL_INPUT_REGEX, parseDecimalInput } from '../utils/numericInput';
+import VerifiedBadge from '../components/VerifiedBadge';
 
 type FoodEntryViewScreenProps = RootStackScreenProps<'FoodEntryView'>;
 
@@ -106,6 +114,7 @@ const FoodEntryViewScreen: React.FC<FoodEntryViewScreenProps> = ({
   const [createdVariantOverride, setCreatedVariantOverride] =
     useState<FoodUnitVariant | null>(null);
   const insets = useSafeAreaInsets();
+  const usesNativeHeader = useNativeIOSHeadersActive();
   const activeWorkoutBarPadding = useActiveWorkoutBarPadding('stack');
   const { profile } = useProfile();
   const calendarRef = useRef<CalendarSheetRef>(null);
@@ -129,6 +138,9 @@ const FoodEntryViewScreen: React.FC<FoodEntryViewScreenProps> = ({
     selectedVariantId: string | undefined;
     quantityText: string;
     adjustedValues: FoodFormData | null;
+    // Custom-nutrient overrides returned from the adjust screen. `undefined`
+    // means "not adjusted" (fall back to the variant/entry snapshot).
+    adjustedCustomNutrients: Record<string, string | number> | null | undefined;
   }
 
   const initialDate = normalizeDate(entry.entry_date);
@@ -139,6 +151,7 @@ const FoodEntryViewScreen: React.FC<FoodEntryViewScreenProps> = ({
     selectedVariantId: entry.variant_id,
     quantityText: String(entry.quantity),
     adjustedValues: null,
+    adjustedCustomNutrients: undefined,
   });
 
   const {
@@ -148,6 +161,7 @@ const FoodEntryViewScreen: React.FC<FoodEntryViewScreenProps> = ({
     selectedVariantId,
     quantityText,
     adjustedValues,
+    adjustedCustomNutrients,
   } = editState;
   const updateEdit = useCallback(
     (patch: Partial<EditState>) => setEditState((prev) => ({ ...prev, ...patch })),
@@ -177,31 +191,7 @@ const FoodEntryViewScreen: React.FC<FoodEntryViewScreenProps> = ({
   }, [createdVariantOverride, entry, variants]);
 
   const variantPickerOptions = useMemo(() => {
-    const baseOptions = (variants ?? []).map((variant) => ({
-      id: variant.id,
-      label: formatVariantLabel({
-        servingSize: variant.serving_size,
-        servingUnit: variant.serving_unit,
-        calories: variant.calories,
-      }),
-      servingSize: variant.serving_size,
-      servingUnit: variant.serving_unit,
-      calories: variant.calories,
-      protein: variant.protein,
-      carbs: variant.carbs,
-      fat: variant.fat,
-      fiber: variant.dietary_fiber,
-      saturatedFat: variant.saturated_fat,
-      sodium: variant.sodium,
-      sugars: variant.sugars,
-      transFat: variant.trans_fat,
-      potassium: variant.potassium,
-      calcium: variant.calcium,
-      iron: variant.iron,
-      cholesterol: variant.cholesterol,
-      vitaminA: variant.vitamin_a,
-      vitaminC: variant.vitamin_c,
-    }));
+    const baseOptions = buildLocalVariantOptions(variants);
 
     if (!createdVariantOverride?.id) {
       return baseOptions;
@@ -222,6 +212,14 @@ const FoodEntryViewScreen: React.FC<FoodEntryViewScreenProps> = ({
       ...baseOptions,
     ];
   }, [createdVariantOverride, variants]);
+
+  const resolvedLocalPickerVariantId = useMemo(
+    () =>
+      createdVariantOverride
+        ? undefined
+        : resolveLocalPickerVariantId(variants, selectedVariantId),
+    [createdVariantOverride, selectedVariantId, variants],
+  );
 
   const selectedUnitSelection = useMemo<FoodUnitSelectionResult | undefined>(() => {
     if (createdVariantOverride && createdVariantOverride.id === selectedVariantId) {
@@ -275,6 +273,11 @@ const FoodEntryViewScreen: React.FC<FoodEntryViewScreenProps> = ({
   }, [createdVariantOverride, entry, selectedVariantId, variants]);
 
   const selectedCustomNutrients = useMemo(() => {
+    // Edits from the adjust screen take priority over the stored snapshot.
+    if (adjustedCustomNutrients !== undefined) {
+      return adjustedCustomNutrients;
+    }
+
     if (createdVariantOverride && createdVariantOverride.id === selectedVariantId) {
       return createdVariantOverride.custom_nutrients ?? null;
     }
@@ -288,12 +291,43 @@ const FoodEntryViewScreen: React.FC<FoodEntryViewScreenProps> = ({
       }
     }
 
-    if (selectedVariantId === entry.variant_id) {
+    if ((selectedVariantId ?? null) === (entry.variant_id ?? null)) {
       return entry.custom_nutrients ?? null;
     }
 
     return undefined;
-  }, [createdVariantOverride, entry, selectedVariantId, variants]);
+  }, [adjustedCustomNutrients, createdVariantOverride, entry, selectedVariantId, variants]);
+
+  // User-defined custom nutrients to surface alongside the standard "show more"
+  // rows — mirrors FoodNutritionSummary so the entry view matches the library
+  // food view. Values come from the entry/variant custom_nutrients snapshot and
+  // are scaled by servings via renderNutrientValue like every other row.
+  const { isConnected } = useServerConnection();
+  const { customNutrients: customNutrientDefs } = useCustomNutrients({ enabled: isConnected });
+  const customNutrientRows = useMemo(() => {
+    const rows: { label: string; value: number; unit: string }[] = [];
+    const seen = new Set<string>();
+    for (const def of customNutrientDefs) {
+      const rawValue = selectedCustomNutrients?.[def.name];
+      const value =
+        rawValue == null
+          ? 0
+          : typeof rawValue === 'number'
+            ? rawValue
+            : parseFloat(String(rawValue));
+      rows.push({ label: def.name, value: isNaN(value) ? 0 : value, unit: def.unit });
+      seen.add(def.name);
+    }
+    if (selectedCustomNutrients) {
+      for (const [name, rawValue] of Object.entries(selectedCustomNutrients)) {
+        if (seen.has(name)) continue;
+        const value = typeof rawValue === 'number' ? rawValue : parseFloat(String(rawValue));
+        if (isNaN(value)) continue;
+        rows.push({ label: name, value, unit: '' });
+      }
+    }
+    return rows;
+  }, [customNutrientDefs, selectedCustomNutrients]);
 
   const displayValues = useMemo(() => {
     if (!adjustedValues) return activeVariant;
@@ -332,12 +366,17 @@ const FoodEntryViewScreen: React.FC<FoodEntryViewScreenProps> = ({
 
   const adjustedFromNav = route.params?.adjustedValues;
   const adjustedUnitSelectionFromNav = route.params?.adjustedUnitSelection;
+  const adjustedCustomNutrientsFromNav = route.params?.adjustedCustomNutrients;
   useEffect(() => {
     servingSizeRef.current = displayValues.servingSize;
   }, [displayValues.servingSize]);
 
   useEffect(() => {
-    if (!adjustedFromNav && !adjustedUnitSelectionFromNav) {
+    if (
+      !adjustedFromNav &&
+      !adjustedUnitSelectionFromNav &&
+      adjustedCustomNutrientsFromNav === undefined
+    ) {
       return;
     }
 
@@ -351,10 +390,18 @@ const FoodEntryViewScreen: React.FC<FoodEntryViewScreenProps> = ({
       const isKnownVariant = (variants ?? []).some(
         (variant) => variant.id === adjustedUnitSelectionFromNav.variant.id,
       );
+      // Reacting to a unit selection returned via navigation params; a
+      // multi-state effect that can't collapse to a render-time derive.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setCreatedVariantOverride(
         isKnownVariant ? null : adjustedUnitSelectionFromNav.variant,
       );
-      if (adjustedUnitSelectionFromNav.variant.id) {
+      // For local foods, only update selectedVariantId when the returned selection
+      // is an existing saved variant. Draft IDs are never persisted to the database
+      // and must not be written into the save payload via handleSave().
+      const isLocalFood = !!entry.food_id;
+      const isDraft = adjustedUnitSelectionFromNav.kind === 'draft';
+      if (adjustedUnitSelectionFromNav.variant.id && !(isLocalFood && isDraft)) {
         updateEdit({
           selectedVariantId: adjustedUnitSelectionFromNav.variant.id,
         });
@@ -363,6 +410,9 @@ const FoodEntryViewScreen: React.FC<FoodEntryViewScreenProps> = ({
 
     updateEdit({
       ...(adjustedFromNav ? { adjustedValues: adjustedFromNav } : {}),
+      ...(adjustedCustomNutrientsFromNav !== undefined
+        ? { adjustedCustomNutrients: adjustedCustomNutrientsFromNav }
+        : {}),
       ...(nextServingSize !== previousServingSize
         ? { quantityText: String(nextServingSize) }
         : {}),
@@ -370,13 +420,53 @@ const FoodEntryViewScreen: React.FC<FoodEntryViewScreenProps> = ({
     navigation.setParams({
       adjustedValues: undefined,
       adjustedUnitSelection: undefined,
+      adjustedCustomNutrients: undefined,
     });
   }, [
     adjustedFromNav,
     adjustedUnitSelectionFromNav,
+    adjustedCustomNutrientsFromNav,
+    entry.food_id,
     navigation,
     updateEdit,
     variants,
+  ]);
+
+  useEffect(() => {
+    if (
+      !resolvedLocalPickerVariantId ||
+      resolvedLocalPickerVariantId === selectedVariantId
+    ) {
+      return;
+    }
+
+    // Keep old saved reference/sibling IDs out of the display picker. The
+    // canonical ID is an in-memory edit state until the user explicitly saves.
+    const selectedVariant = selectorVariants.find(
+      (variant) => variant.id === selectedVariantId,
+    );
+    const resolvedVariant = variantPickerOptions.find(
+      (variant) => variant.id === resolvedLocalPickerVariantId,
+    );
+    const convertedQuantity = convertEquivalentVariantQuantity(
+      parseDecimalInput(quantityText) || 0,
+      selectedVariant?.serving_size,
+      resolvedVariant?.servingSize,
+    );
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    updateEdit({
+      selectedVariantId: resolvedLocalPickerVariantId,
+      ...(convertedQuantity !== undefined
+        ? { quantityText: formatServingSizeDisplay(convertedQuantity) }
+        : {}),
+    });
+  }, [
+    quantityText,
+    resolvedLocalPickerVariantId,
+    selectedVariantId,
+    selectorVariants,
+    updateEdit,
+    variantPickerOptions,
   ]);
 
   const handleVariantChange = useCallback(
@@ -388,6 +478,7 @@ const FoodEntryViewScreen: React.FC<FoodEntryViewScreenProps> = ({
       updateEdit({
         selectedVariantId: variantId,
         adjustedValues: null,
+        adjustedCustomNutrients: undefined,
         ...(variant ? { quantityText: String(variant.serving_size) } : {}),
       });
     },
@@ -420,15 +511,49 @@ const FoodEntryViewScreen: React.FC<FoodEntryViewScreenProps> = ({
   };
 
   const navigateToNutritionForm = () => {
+    // Build selectedUnitSelection from displayValues so FoodForm's variant-sync
+    // effect uses the entry's actual stored nutrition rather than overwriting
+    // initialValues with the DB variant's defaults.
+    // Use createdVariantOverride as the metadata base when it exists ??? it holds
+    // AI provenance, custom_nutrients, and other draft metadata that
+    // selectedUnitSelection?.variant may not have (the memo falls back to the
+    // DB variant when createdVariantOverride.id !== selectedVariantId, which is
+    // always true for local-food drafts after the P1 guard). Fall back to the
+    // selectedUnitSelection variant for non-draft cases.
+    const metadataBase = createdVariantOverride ?? selectedUnitSelection?.variant ?? {};
+    const displayVariant: FoodUnitVariant = {
+      ...metadataBase,
+      id: selectedVariantId,
+      serving_size: displayValues.servingSize,
+      serving_unit: displayValues.servingUnit,
+      calories: displayValues.calories,
+      protein: displayValues.protein,
+      carbs: displayValues.carbs,
+      fat: displayValues.fat,
+      dietary_fiber: displayValues.fiber,
+      saturated_fat: displayValues.saturatedFat,
+      sodium: displayValues.sodium,
+      sugars: displayValues.sugars,
+      trans_fat: displayValues.transFat,
+      potassium: displayValues.potassium,
+      calcium: displayValues.calcium,
+      iron: displayValues.iron,
+      cholesterol: displayValues.cholesterol,
+      vitamin_a: displayValues.vitaminA,
+      vitamin_c: displayValues.vitaminC,
+    };
+    const displayUnitSelection: FoodUnitSelectionResult | undefined = selectedUnitSelection
+      ? { kind: selectedUnitSelection.kind, variant: displayVariant }
+      : undefined;
     navigation.navigate('FoodForm', {
       mode: 'adjust-entry-nutrition',
       returnTo: 'FoodEntryView',
       returnKey: route.key,
       foodId: entry.food_id ?? undefined,
       variantId: selectedVariantId,
-      customNutrients: selectedCustomNutrients,
+      customNutrients: selectedCustomNutrients ?? null,
       availableUnitVariants: selectorVariants,
-      selectedUnitSelection,
+      selectedUnitSelection: displayUnitSelection,
       initialValues: {
         name: adjustedValues?.name || entry.food_name || '',
         brand: adjustedValues?.brand ?? entry.brand_name ?? '',
@@ -478,6 +603,7 @@ const FoodEntryViewScreen: React.FC<FoodEntryViewScreenProps> = ({
           selectedVariantId: mergedEntry.variant_id,
           quantityText: String(mergedEntry.quantity),
           adjustedValues: null,
+          adjustedCustomNutrients: undefined,
         });
       },
     });
@@ -515,6 +641,11 @@ const FoodEntryViewScreen: React.FC<FoodEntryViewScreenProps> = ({
       payload.cholesterol = displayValues.cholesterol;
       payload.vitamin_a = displayValues.vitaminA;
       payload.vitamin_c = displayValues.vitaminC;
+    }
+
+    // Persist custom-nutrient edits made on the adjust screen.
+    if (adjustedCustomNutrients !== undefined) {
+      payload.custom_nutrients = adjustedCustomNutrients ?? null;
     }
 
     if (Object.keys(payload).length === 0) {
@@ -585,10 +716,11 @@ const FoodEntryViewScreen: React.FC<FoodEntryViewScreenProps> = ({
     : entry.quantity;
   const servingsCount =
     servings % 1 === 0 ? servings : parseFloat(servings.toFixed(2));
+  const formattedEntryUnit = formatServingUnit(entry.unit || '');
   const servingsDisplay =
     servings === 1
-      ? `1 serving \u00b7 ${entry.serving_size} ${entry.unit} per serving`
-      : `${servingsCount} servings \u00b7 ${entry.serving_size} ${entry.unit} per serving`;
+      ? `1 serving \u00b7 ${entry.serving_size} ${formattedEntryUnit} per serving`
+      : `${servingsCount} servings \u00b7 ${entry.serving_size} ${formattedEntryUnit} per serving`;
 
   const [showMoreNutrients, setShowMoreNutrients] = useState(false);
   // Use the same per-mode gate the macro bar uses, and pass carbs raw —
@@ -600,48 +732,43 @@ const FoodEntryViewScreen: React.FC<FoodEntryViewScreenProps> = ({
       showNetCarbs: useNetCarbsInList,
       carbs: useNetCarbsInList ? displayValues.carbs : undefined,
     });
-  const hasAdditional = additionalNutrients.length > 0;
+  const hasAdditional = additionalNutrients.length > 0 || customNutrientRows.length > 0;
   const showAdditionalRows = showMoreNutrients && hasAdditional;
   const renderNutrientValue = (value: number, unit: string) =>
     isEditing
       ? `${Math.round(scaled(value))}${unit}`
       : `${Math.round(scaledValue(value, entry))}${unit}`;
 
+  // View mode: back + owner-gated Edit. Edit mode: 'Done' (not 'Save') commits
+  // the changes — the entry stays on screen, so Done reads as "finish editing".
+  const header = useScreenHeader({
+    borderless: true,
+    animateKey: isEditing ? 'edit' : 'view',
+    left: { kind: 'back' },
+    right: canEdit
+      ? isEditing
+        ? {
+            kind: 'primary',
+            label: 'Done',
+            disabled: isUpdatePending || quantity <= 0,
+            onPress: handleSave,
+            accessibilityLabel: 'Save food entry changes',
+            identifier: 'food-entry-view-done',
+          }
+        : {
+            kind: 'text',
+            label: 'Edit',
+            role: 'secondary',
+            onPress: () => updateEdit({ isEditing: true }),
+            accessibilityLabel: 'Edit food entry',
+            identifier: 'food-entry-view-edit',
+          }
+      : null,
+  });
+
   return (
-    <View className="flex-1 bg-background" style={{ paddingTop: insets.top }}>
-      <View className="flex-row items-center px-4 py-3 border-b border-border-subtle">
-        <TouchableOpacity
-          onPress={() => navigation.goBack()}
-          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-          className="z-10"
-        >
-          <Icon name="chevron-back" size={22} color={accentColor} />
-        </TouchableOpacity>
-        {canEdit && !isEditing && (
-          <FadeView style={{ marginLeft: 'auto', zIndex: 10 }}>
-            <Button
-              variant="ghost"
-              onPress={() => updateEdit({ isEditing: true })}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              textClassName="font-medium"
-            >
-              Edit
-            </Button>
-          </FadeView>
-        )}
-        {isEditing && (
-          <FadeView style={{ marginLeft: 'auto', zIndex: 10 }}>
-            <Button
-              variant="ghost"
-              onPress={handleSave}
-              disabled={isUpdatePending || quantity <= 0}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-            >
-              Done
-            </Button>
-          </FadeView>
-        )}
-      </View>
+    <View className="flex-1 bg-background" style={usesNativeHeader ? undefined : { paddingTop: insets.top }}>
+      {header}
 
       <ScrollView
         className="flex-1"
@@ -651,9 +778,12 @@ const FoodEntryViewScreen: React.FC<FoodEntryViewScreenProps> = ({
         }}
       >
         <Animated.View layout={LinearTransition.duration(300)}>
-          <Text className="text-text-primary text-3xl font-bold">
-            {(isEditing && adjustedValues?.name) || entry.food_name || 'Unknown food'}
-          </Text>
+          <View className="flex-row items-start gap-2">
+            <Text className="text-text-primary text-3xl font-bold flex-shrink">
+              {(isEditing && adjustedValues?.name) || entry.food_name || 'Unknown food'}
+            </Text>
+            {entry.provider_verified ? <VerifiedBadge size="md" style={{ marginTop: 7 }} /> : null}
+          </View>
           {((isEditing && adjustedValues?.brand) || entry.brand_name) && (
             <Text className="text-text-muted mt-1 font-semibold">
               {(isEditing && adjustedValues?.brand) || entry.brand_name}
@@ -672,7 +802,7 @@ const FoodEntryViewScreen: React.FC<FoodEntryViewScreenProps> = ({
                     keyboardType="decimal-pad"
                   />
                   <Text className="text-text-primary text-base font-medium ml-2">
-                    {displayValues.servingUnit}
+                    {formatServingUnit(displayValues.servingUnit)}
                   </Text>
                 </View>
                 <View className="flex-row items-center mt-2">
@@ -699,7 +829,7 @@ const FoodEntryViewScreen: React.FC<FoodEntryViewScreenProps> = ({
                         >
                           <Text className="text-text-secondary text-sm">
                             {' - '}
-                            {displayValues.servingSize} {displayValues.servingUnit} per
+                            {displayValues.servingSize} {formatServingUnit(displayValues.servingUnit)} per
                             serving
                           </Text>
                           <Icon
@@ -715,7 +845,7 @@ const FoodEntryViewScreen: React.FC<FoodEntryViewScreenProps> = ({
                   ) : (
                     <Text className="text-text-secondary text-sm">
                       {' - '}
-                      {displayValues.servingSize} {displayValues.servingUnit} per
+                      {displayValues.servingSize} {formatServingUnit(displayValues.servingUnit)} per
                       serving
                     </Text>
                   )}
@@ -854,7 +984,7 @@ const FoodEntryViewScreen: React.FC<FoodEntryViewScreenProps> = ({
 
         {(primaryNutrients.length > 0 || hasAdditional) && (
           <Animated.View layout={LinearTransition.duration(300)} className="my-2 gap-2">
-            {primaryNutrients.length > 0 && (
+            {(primaryNutrients.length > 0 || customNutrientRows.length > 0) && (
               <View className="rounded-xl">
                 {primaryNutrients.map((nutrient, index) => {
                   const isLastVisible =
@@ -885,7 +1015,25 @@ const FoodEntryViewScreen: React.FC<FoodEntryViewScreenProps> = ({
                       <View
                         key={nutrient.label}
                         className={`flex-row justify-between py-1 ${
-                          index < additionalNutrients.length - 1
+                          index < additionalNutrients.length - 1 ||
+                          customNutrientRows.length > 0
+                            ? 'border-b border-border-subtle'
+                            : ''
+                        }`}
+                      >
+                        <Text className="text-text-secondary text-sm">
+                          {nutrient.label}
+                        </Text>
+                        <Text className="text-text-primary text-sm">
+                          {renderNutrientValue(nutrient.value, nutrient.unit)}
+                        </Text>
+                      </View>
+                    ))}
+                    {customNutrientRows.map((nutrient, index) => (
+                      <View
+                        key={`custom-${nutrient.label}`}
+                        className={`flex-row justify-between py-1 ${
+                          index < customNutrientRows.length - 1
                             ? 'border-b border-border-subtle'
                             : ''
                         }`}

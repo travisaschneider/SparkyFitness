@@ -19,12 +19,14 @@ export const addSheetRef = React.createRef<AddSheetRef>();
 
 interface AddSheetProps {
   onAddFood: () => void;
-  onAddWorkout: () => void;
+  onStartWorkout: () => void;
   onAddActivity: () => void;
-  onAddFromPreset: () => void;
+  onLogWorkout: () => void;
   onSyncHealthData: () => void;
   onBarcodeScan: () => void;
   onAddMeasurements: () => void;
+  onAskSparky: () => void;
+  onDismissWithoutAction?: () => void;
 }
 
 interface ActionCard {
@@ -34,11 +36,12 @@ interface ActionCard {
 }
 
 const AddSheet = React.forwardRef<AddSheetRef, AddSheetProps>(
-  ({ onAddFood, onAddWorkout, onAddActivity, onAddFromPreset, onSyncHealthData, onBarcodeScan, onAddMeasurements }, ref) => {
+  ({ onAddFood, onStartWorkout, onAddActivity, onLogWorkout, onSyncHealthData, onBarcodeScan, onAddMeasurements, onAskSparky, onDismissWithoutAction }, ref) => {
     const bottomSheetRef = useRef<BottomSheetModal>(null);
     const isDismissingRef = useRef(false);
     const isOpenRef = useRef(false);
     const isPresentingRef = useRef(false);
+    const selectedActionRef = useRef(false);
     const pendingPresentRef = useRef(false);
     const pendingInitialMenuRef = useRef<'exercise' | null>(null);
     const presentFrameRef = useRef<number | null>(null);
@@ -87,6 +90,7 @@ const AddSheet = React.forwardRef<AddSheetRef, AddSheetProps>(
 
         pendingPresentRef.current = false;
         pendingInitialMenuRef.current = null;
+        selectedActionRef.current = false;
         setShowExerciseMenu(initialMenu === 'exercise');
         schedulePresent();
       },
@@ -123,6 +127,7 @@ const AddSheet = React.forwardRef<AddSheetRef, AddSheetProps>(
     const handleAction = useCallback((action?: () => void) => {
       pendingPresentRef.current = false;
       pendingInitialMenuRef.current = null;
+      selectedActionRef.current = true;
       isPresentingRef.current = false;
       isDismissingRef.current = true;
       clearScheduledPresent();
@@ -137,13 +142,18 @@ const AddSheet = React.forwardRef<AddSheetRef, AddSheetProps>(
         const initialMenu = pendingInitialMenuRef.current;
         pendingPresentRef.current = false;
         pendingInitialMenuRef.current = null;
+        selectedActionRef.current = false;
         setShowExerciseMenu(initialMenu === 'exercise');
         schedulePresent();
       } else {
+        if (!selectedActionRef.current) {
+          onDismissWithoutAction?.();
+        }
+        selectedActionRef.current = false;
         isPresentingRef.current = false;
         pendingInitialMenuRef.current = null;
       }
-    }, [schedulePresent]);
+    }, [onDismissWithoutAction, schedulePresent]);
 
     const handleAnimate = useCallback((fromIndex: number, toIndex: number) => {
       if (fromIndex >= 0 && toIndex === -1) {
@@ -222,7 +232,12 @@ const AddSheet = React.forwardRef<AddSheetRef, AddSheetProps>(
         <View className="h-10 items-center justify-center">
           <Icon name={icon} size={32} color={accentPrimary} />
         </View>
-        <Text className="text-text-primary text-sm font-medium mt-2">
+        <Text
+          className="text-text-primary text-sm font-medium mt-2 text-center"
+          numberOfLines={1}
+          adjustsFontSizeToFit
+          minimumFontScale={0.8}
+        >
           {label}
         </Text>
         <Text className="text-xs mt-1 text-center" numberOfLines={2} style={{ color: textSecondary, minHeight: 32 }}>
@@ -257,9 +272,9 @@ const AddSheet = React.forwardRef<AddSheetRef, AddSheetProps>(
                 </Text>
               </Pressable>
               <View className="flex-row">
-                {renderExerciseOption('Workout', 'Sets & reps', 'exercise-weights', onAddWorkout)}
+                {renderExerciseOption('Workout', 'Live sets & reps', 'exercise-weights', onStartWorkout)}
                 {renderExerciseOption('Activity', 'Duration & distance', 'exercise-running-filled', onAddActivity)}
-                {renderExerciseOption('Preset', 'Use a template', 'bookmark-filled', onAddFromPreset)}
+                {renderExerciseOption('Log Workout', 'Past sets & reps', 'pencil', onLogWorkout)}
               </View>
             </>
           ) : (
@@ -272,6 +287,7 @@ const AddSheet = React.forwardRef<AddSheetRef, AddSheetProps>(
                 {renderCard(cards[2])}
                 {renderCard(cards[3])}
               </View>
+              {renderSecondaryRow('Ask Sparky', 'sparkles', onAskSparky)}
               {renderSecondaryRow('Sync Health Data', 'sync', onSyncHealthData)}
             </>
           )}

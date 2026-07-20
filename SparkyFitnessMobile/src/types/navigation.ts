@@ -12,6 +12,7 @@ import type { Exercise } from './exercise';
 import type { Meal, MealIngredientDraft } from './meals';
 import type { FoodEntryMeal } from './foodEntryMeals';
 import type {
+  EquivalentUnit,
   FoodUnitSelectionResult,
   FoodUnitVariant,
 } from './foodUnitVariants';
@@ -55,7 +56,14 @@ export type RootStackParamList = {
     pendingScannedBarcode?: string;
     scannedBarcodeNonce?: number;
   };
-  ExerciseDetail: { item: Exercise; updatedItem?: Exercise };
+  ExerciseDetail: {
+    item: Exercise;
+    updatedItem?: Exercise;
+    // Suppress the Start Workout / Log Exercise buttons when opened from within
+    // a workout context (active workout, workout builder/edit, preset form),
+    // where starting or logging this single exercise would be redundant.
+    hideWorkoutActions?: boolean;
+  };
   FoodSearch:
     | {
         date?: string;
@@ -68,6 +76,9 @@ export type RootStackParamList = {
         date?: string;
         adjustedValues?: FoodFormData;
         adjustedUnitSelection?: FoodUnitSelectionResult;
+        adjustedCustomNutrients?: Record<string, string | number> | null;
+        pendingEquivalents?: EquivalentUnit[];
+        selectedVariantOverride?: FoodUnitVariant;
         pickerMode?: FoodPickerMode;
         ingredientIndex?: number;
         returnDepth?: number;
@@ -77,6 +88,7 @@ export type RootStackParamList = {
     entry: FoodEntry;
     adjustedValues?: FoodFormData;
     adjustedUnitSelection?: FoodUnitSelectionResult;
+    adjustedCustomNutrients?: Record<string, string | number> | null;
   };
   MealTypeDetail: { date: string; mealType: MealTypeKey; mealLabel?: string };
   FoodForm:
@@ -113,6 +125,7 @@ export type RootStackParamList = {
         pickerMode?: FoodPickerMode;
         returnDepth?: number;
         initialMode?: 'barcode' | 'label' | 'photo';
+        providerId?: string;
       }
     | {
         mode: 'capture-barcode';
@@ -134,7 +147,7 @@ export type RootStackParamList = {
       }
     | undefined;
   ExerciseSearch: { returnKey: string };
-  PresetSearch: { date?: string } | undefined;
+  PresetSearch: { selectedExercise?: Exercise; selectionNonce?: number } | undefined;
   WorkoutAdd: {
     session?: PresetSessionResponse;
     preset?: WorkoutPreset;
@@ -146,13 +159,19 @@ export type RootStackParamList = {
   } | undefined;
   ActivityAdd: { entry?: IndividualSessionResponse; date?: string; popCount?: number; selectedExercise?: Exercise; selectionNonce?: number; skipDraftLoad?: boolean } | undefined;
   WorkoutDetail: { session: PresetSessionResponse; selectedExercise?: Exercise; selectionNonce?: number };
+  ActiveWorkout: { selectedExercise?: Exercise; selectionNonce?: number } | undefined;
   ActivityDetail: { session: IndividualSessionResponse };
+  FastingDetail: undefined;
+  Chat: undefined;
   Logs: undefined;
   Sync: undefined;
   MeasurementsAdd: { date?: string } | undefined;
   CalorieSettings: undefined;
   FoodSettings: undefined;
+  DashboardSettings: undefined;
+  DiarySettings: undefined;
   ServerSettings: undefined;
+  PasskeySettings: undefined;
   AppSettings: undefined;
   About: undefined;
   WhatsNew: undefined;

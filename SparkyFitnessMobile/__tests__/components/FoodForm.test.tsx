@@ -58,11 +58,15 @@ jest.mock('../../src/components/Icon', () => {
   };
 });
 
-// FoodForm now queries the active AI service + user-AI-config policy + user
-// preferences to gate the inline AI estimate flow inside the unit selector
-// sheet. Those hooks use react-query under the hood, which would require a
-// QueryClientProvider. Mock them as inert so the form renders cleanly in
-// unit-test isolation.
+// FoodForm queries server connection + custom nutrient defs + AI service
+// settings via react-query. Mock all of them as inert so the form renders
+// cleanly in unit-test isolation without a QueryClientProvider.
+jest.mock('../../src/hooks', () => ({
+  useServerConnection: () => ({ isConnected: true, isLoading: false }),
+}));
+jest.mock('../../src/hooks/useCustomNutrients', () => ({
+  useCustomNutrients: () => ({ customNutrients: [], isLoading: false, isError: false, refetch: jest.fn() }),
+}));
 jest.mock('../../src/hooks/useActiveAiServiceSetting', () => ({
   useActiveAiServiceSetting: () => ({
     data: mockActiveAiServiceSetting,
@@ -1407,5 +1411,48 @@ describe('FoodForm', () => {
     await waitFor(() => {
       expect(screen.getByText('Convert with AI')).toBeTruthy();
     });
+  });
+
+  it('keeps the trailing decimal while typing an equivalent size', () => {
+    const handleChange = jest.fn();
+    function Harness() {
+      const [items, setItems] = React.useState([
+        { serving_size: 3, serving_unit: 'g', _clientKey: 'eq-test' },
+      ]);
+      return (
+        <FoodForm
+          initialValues={{
+            name: 'Greek Yogurt',
+            servingSize: '100',
+            servingUnit: 'g',
+            calories: '120',
+            protein: '10',
+            carbs: '8',
+            fat: '4',
+          }}
+          equivalents={{
+            items,
+            onChange: (next) => {
+              handleChange(next);
+              setItems(next);
+            },
+          }}
+          onSubmit={jest.fn()}
+        />
+      );
+    }
+
+    const screen = render(<Harness />);
+
+    // Typing the decimal point must not snap the field back to the parsed
+    // integer — that regression made decimals impossible to enter on Android.
+    fireEvent.changeText(screen.getByDisplayValue('3'), '3.');
+    expect(screen.getByDisplayValue('3.')).toBeTruthy();
+
+    fireEvent.changeText(screen.getByDisplayValue('3.'), '3.5');
+    expect(screen.getByDisplayValue('3.5')).toBeTruthy();
+    expect(handleChange).toHaveBeenLastCalledWith([
+      expect.objectContaining({ serving_size: 3.5, _sizeText: '3.5' }),
+    ]);
   });
 });

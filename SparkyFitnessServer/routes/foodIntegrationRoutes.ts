@@ -32,7 +32,7 @@ router.use('/fatsecret', authenticate, async (req, res, next) => {
   try {
     // This call will eventually go through the generic dataIntegrationService
     const providerDetails = await foodService.getFoodDataProviderDetails(
-      req.userId,
+      req.authenticatedUserId,
       providerId
     );
     if (
@@ -66,7 +66,7 @@ router.use('/mealie', authenticate, async (req, res, next) => {
   }
   try {
     const providerDetails = await foodService.getFoodDataProviderDetails(
-      req.userId,
+      req.authenticatedUserId,
       providerId
     );
     if (
@@ -107,7 +107,7 @@ router.use('/tandoor', authenticate, async (req, res, next) => {
   }
   try {
     const providerDetails = await foodService.getFoodDataProviderDetails(
-      req.userId,
+      req.authenticatedUserId,
       // @ts-expect-error TS(2339): Property 'providerId' does not exist on type 'Requ... Remove this comment to see the full error message
       req.providerId
     );
@@ -166,7 +166,7 @@ router.use('/norish', authenticate, async (req, res, next) => {
   }
   try {
     const providerDetails = await foodService.getFoodDataProviderDetails(
-      req.userId,
+      req.authenticatedUserId,
       // @ts-expect-error TS(2339): Property 'providerId' does not exist on type 'Requ... Remove this comment to see the full error message
       req.providerId
     );
@@ -198,7 +198,7 @@ router.use('/usda', authenticate, async (req, res, next) => {
   }
   try {
     const providerDetails = await foodService.getFoodDataProviderDetails(
-      req.userId,
+      req.authenticatedUserId,
       providerId
     );
     if (!providerDetails || !providerDetails.app_key) {
@@ -399,30 +399,34 @@ router.get(
  *         description: Missing search query.
  */
 router.get('/openfoodfacts/search', authenticate, async (req, res, next) => {
-  const { query } = req.query;
+  const query =
+    typeof req.query.query === 'string'
+      ? req.query.query
+      : String(req.query.query || '');
   if (!query) {
     return res.status(400).json({ error: 'Missing search query' });
   }
-  // @ts-expect-error TS(2345): Argument of type 'string | ParsedQs | (string | Pa... Remove this comment to see the full error message
-  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const page = Math.max(
+    1,
+    parseInt(typeof req.query.page === 'string' ? req.query.page : '1', 10) || 1
+  );
   try {
     const userPrefs = await preferenceService.getUserPreferences(
       req.userId,
-
       req.userId
     );
     const language = userPrefs?.language || 'en';
     const providerId =
       req.headers['x-provider-id'] ||
       (await externalProviderService.getActiveOpenFoodFactsProviderId(
-        req.userId
+        req.authenticatedUserId
       ));
     const data = await searchOpenFoodFacts(
       query,
       page,
       language,
 
-      providerId ? req.userId : undefined,
+      providerId ? req.authenticatedUserId : undefined,
       providerId || undefined
     );
     res.json(data);
@@ -468,14 +472,14 @@ router.get(
       const providerId =
         req.headers['x-provider-id'] ||
         (await externalProviderService.getActiveOpenFoodFactsProviderId(
-          req.userId
+          req.authenticatedUserId
         ));
       const data = await searchOpenFoodFactsByBarcodeFields(
         barcode,
         undefined,
         language,
 
-        providerId ? req.userId : undefined,
+        providerId ? req.authenticatedUserId : undefined,
         providerId || undefined
       );
       res.json(data);
@@ -947,7 +951,12 @@ router.get('/usda/search', authenticate, async (req, res, next) => {
     Math.max(1, parseInt(req.query.pageSize, 10) || 50)
   );
   try {
-    const data = await searchUsdaFoods(query, usdaApiKey, page, pageSize);
+    const data = await searchUsdaFoods(
+      query as string,
+      usdaApiKey,
+      page,
+      pageSize
+    );
     res.json(data);
   } catch (error) {
     next(error);
@@ -1001,7 +1010,7 @@ router.get('/usda/details', authenticate, async (req, res, next) => {
     return res.status(400).json({ error: 'Missing FDC ID' });
   }
   try {
-    const data = await getUsdaFoodDetails(fdcId, usdaApiKey);
+    const data = await getUsdaFoodDetails(fdcId as string, usdaApiKey);
     res.json(data);
   } catch (error) {
     next(error);

@@ -2,7 +2,7 @@ import { addLog } from '../LogService';
 import { normalizeUrl } from './apiClient';
 import { getAuthHeaders, notifySessionExpired } from './authService';
 import { getActiveServerConfig, proxyHeadersToRecord } from '../storage';
-import { FOOD_PHOTO_PROVIDER_LABELS } from '../../utils/foodPhotoEstimate';
+import { DEFAULT_API_TIMEOUT_MS, fetchWithTimeout } from '../../utils/concurrency';
 
 export interface ActiveAiServiceSetting {
   id: string;
@@ -23,14 +23,14 @@ export async function fetchUserAiConfigAllowed(): Promise<boolean> {
   }
 
   try {
-    const response = await fetch(`${baseUrl}/api/global-settings/allow-user-ai-config`, {
+    const response = await fetchWithTimeout(`${baseUrl}/api/global-settings/allow-user-ai-config`, {
       method: 'GET',
       cache: 'no-store', // skip native HTTP cache to avoid 304 empty bodies (#1353)
       headers: {
         ...proxyHeadersToRecord(config.proxyHeaders),
         ...getAuthHeaders(config),
       },
-    });
+    }, DEFAULT_API_TIMEOUT_MS);
     if (!response.ok) {
       if (response.status === 401 && config.authType === 'session') {
         notifySessionExpired(config.id);
@@ -66,14 +66,14 @@ export async function fetchActiveAiServiceSetting(): Promise<ActiveAiServiceSett
   }
 
   try {
-    const response = await fetch(`${baseUrl}/api/chat/ai-service-settings/active`, {
+    const response = await fetchWithTimeout(`${baseUrl}/api/chat/ai-service-settings/active`, {
       method: 'GET',
       cache: 'no-store', // skip native HTTP cache to avoid 304 empty bodies (#1353)
       headers: {
         ...proxyHeadersToRecord(config.proxyHeaders),
         ...getAuthHeaders(config),
       },
-    });
+    }, DEFAULT_API_TIMEOUT_MS);
     if (!response.ok) {
       if (response.status === 401 && config.authType === 'session') {
         notifySessionExpired(config.id);
@@ -100,10 +100,14 @@ export async function fetchActiveAiServiceSetting(): Promise<ActiveAiServiceSett
   }
 }
 
-const FOOD_PHOTO_SUPPORTED_PROVIDERS = new Set(Object.keys(FOOD_PHOTO_PROVIDER_LABELS));
-
+// Food photo is attempt-all: any configured provider is dispatched server-side
+// (dispatchAiRequest tries every service_type it has a builder for). So the
+// mobile gate only asks "is a provider configured at all" — a genuinely
+// unbuildable type is caught server-side as UNSUPPORTED_PROVIDER and surfaced
+// via mapEstimateError. service_type is a free-form string in the shared model,
+// so trim before testing for emptiness.
 export function isFoodPhotoAvailable(
   setting: ActiveAiServiceSetting | null | undefined,
 ): boolean {
-  return FOOD_PHOTO_SUPPORTED_PROVIDERS.has(setting?.service_type ?? '');
+  return (setting?.service_type ?? '').trim().length > 0;
 }

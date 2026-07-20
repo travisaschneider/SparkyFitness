@@ -31,8 +31,10 @@ const androidPermissions = [
   'android.permission.health.READ_ELEVATION_GAINED',
   'android.permission.health.READ_FLOORS_CLIMBED',
   'android.permission.health.READ_HEART_RATE',
+  'android.permission.health.READ_HEART_RATE_VARIABILITY',
   'android.permission.health.READ_HEIGHT',
   'android.permission.health.READ_HYDRATION',
+  'android.permission.health.READ_NUTRITION',
   'android.permission.health.READ_LEAN_BODY_MASS',
   'android.permission.health.READ_INTERMENSTRUAL_BLEEDING',
   'android.permission.health.READ_MENSTRUATION',
@@ -51,6 +53,14 @@ const androidPermissions = [
   'android.permission.health.READ_WHEELCHAIR_PUSHES',
   'android.permission.health.READ_HEALTH_DATA_IN_BACKGROUND',
   'android.permission.health.READ_HEALTH_DATA_HISTORY',
+  // Writeback (Sparky → Health Connect): nutrition + water. Production feature,
+  // so these live in the base list (not the dev-only writes below).
+  'android.permission.health.WRITE_NUTRITION',
+  'android.permission.health.WRITE_HYDRATION',
+  // Exact rest-complete alerts: without this special access (user-granted via
+  // "Alarms & reminders" on Android 13+), expo-notifications falls back to
+  // inexact alarms that the OS batches ~15s late.
+  'android.permission.SCHEDULE_EXACT_ALARM',
 ];
 
 const devAndroidPermissions = [
@@ -70,7 +80,7 @@ const devAndroidPermissions = [
   'android.permission.health.WRITE_FLOORS_CLIMBED',
   'android.permission.health.WRITE_HEART_RATE',
   'android.permission.health.WRITE_HEIGHT',
-  'android.permission.health.WRITE_HYDRATION',
+  // WRITE_HYDRATION moved to the base androidPermissions list (writeback feature).
   'android.permission.health.WRITE_LEAN_BODY_MASS',
   'android.permission.health.WRITE_INTERMENSTRUAL_BLEEDING',
   'android.permission.health.WRITE_MENSTRUATION',
@@ -134,13 +144,23 @@ export default ({ config }: ConfigContext): Partial<ExpoConfig> => {
         backgroundColor: '#FFFFFF',
       }
     },
-    androidNavigationBar: {
-      enforceContrast: false,
-    },
     plugins: [
       ...(config.plugins ?? []),
       './plugins/withGlanceAndroidSupport',
       './plugins/withCalorieWidget',
+      './plugins/withExactAlarmModule',
+      './plugins/withEnrichedMarkdownNoMath',
+      [
+        'expo-widgets',
+        {
+          groupIdentifier: getIosAppGroup(),
+          bundleIdentifier: process.env.WIDGET_BUNDLE_IDENTIFIER,
+          // Live Activities register at runtime via createLiveActivity and must
+          // NOT be listed here — widgets[] is only for home/Lock Screen widgets
+          // (an entry without supportedFamilies breaks the generated target).
+          widgets: [],
+        },
+      ],
       ...(!isDev ? prodPlugins : []),
     ],
     extra: {

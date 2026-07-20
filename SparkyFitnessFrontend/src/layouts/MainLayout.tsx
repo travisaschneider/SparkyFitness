@@ -1,17 +1,19 @@
 import type React from 'react';
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, Outlet, useNavigate } from 'react-router-dom';
 import { debug, info, error } from '@/utils/logging';
 import {
   Home,
   Activity, // Used for Check-In
+  CalendarHeart,
   BarChart3,
   Utensils, // Used for Foods
   Settings as SettingsIcon,
   LogOut,
   Dumbbell, // Used for Exercises
   Target, // Used for Goals
+  Pill, // Used for Medications
   Shield,
   Plus,
   X,
@@ -39,6 +41,8 @@ import { usePreferences } from '@/contexts/PreferencesContext';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { useMealTypes } from '@/hooks/Diary/useMealTypes';
 import { useCurrentVersionQuery } from '@/hooks/useGeneralQueries';
+import { useCycleSettings } from '@/hooks/useCycle';
+import { cn } from '@/lib/utils';
 import { getGridClassNormal } from '@/utils/layout';
 
 interface AddCompItem {
@@ -50,9 +54,15 @@ interface AddCompItem {
 
 interface MainLayoutProps {
   onShowAboutDialog: () => void;
+  onShowNewReleaseDialog: () => void;
+  onStartOnboarding?: () => void;
 }
 
-const MainLayout: React.FC<MainLayoutProps> = ({ onShowAboutDialog }) => {
+const MainLayout: React.FC<MainLayoutProps> = ({
+  onShowAboutDialog,
+  onShowNewReleaseDialog,
+  onStartOnboarding,
+}) => {
   const { t } = useTranslation();
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
@@ -63,7 +73,7 @@ const MainLayout: React.FC<MainLayoutProps> = ({ onShowAboutDialog }) => {
     hasWritePermission,
     activeUserName,
   } = useActiveUser();
-  const { loggingLevel } = usePreferences();
+  const { getDateRelationToToday, loggingLevel } = usePreferences();
   debug(loggingLevel, 'MainLayout: Component rendered.');
 
   const { data: appVersion } = useCurrentVersionQuery();
@@ -72,6 +82,9 @@ const MainLayout: React.FC<MainLayoutProps> = ({ onShowAboutDialog }) => {
 
   // Fetch meal types for quick log menu
   const { data: mealTypes } = useMealTypes();
+
+  // Fetch cycle settings to determine tab visibility
+  const { data: cycleSettings } = useCycleSettings();
 
   const handleSignOut = async () => {
     info(loggingLevel, 'MainLayout: Attempting to sign out.');
@@ -95,8 +108,26 @@ const MainLayout: React.FC<MainLayoutProps> = ({ onShowAboutDialog }) => {
   const addCompItems: AddCompItem[] = useMemo(() => {
     const items: AddCompItem[] = [];
     if (!isActingOnBehalf) {
+      // Keep this order consistent with the desktop tab order in availableTabs:
+      // Check-In, Cycle, Medications, Foods, Exercises, Goals.
+      items.push({ value: 'checkin', label: 'Check-In', icon: Activity });
+      if (cycleSettings?.enabled) {
+        items.push({
+          value: 'cycle',
+          label: cycleSettings.discreet_mode
+            ? t('nav.wellness', 'Wellness')
+            : cycleSettings.mode === 'pregnant'
+              ? t('nav.pregnancy', 'Pregnancy')
+              : t('nav.cycle', 'Cycle'),
+          icon: cycleSettings.discreet_mode ? Activity : CalendarHeart,
+        });
+      }
       items.push(
-        { value: 'checkin', label: 'Check-In', icon: Activity },
+        {
+          value: 'medications',
+          label: t('nav.medications', 'Medications'),
+          icon: Pill,
+        },
         { value: 'foods', label: 'Foods', icon: Utensils },
         {
           value: 'exercises',
@@ -125,7 +156,7 @@ const MainLayout: React.FC<MainLayoutProps> = ({ onShowAboutDialog }) => {
       }
     }
     return items;
-  }, [isActingOnBehalf, hasWritePermission, t]);
+  }, [isActingOnBehalf, hasWritePermission, cycleSettings, t]);
 
   // Map meal type names to icons
   const getMealTypeIcon = useCallback((name: string): LucideIcon => {
@@ -188,7 +219,25 @@ const MainLayout: React.FC<MainLayoutProps> = ({ onShowAboutDialog }) => {
     if (!isActingOnBehalf) {
       tabs.push(
         { value: '/', label: t('nav.diary'), icon: Home },
-        { value: '/checkin', label: t('nav.checkin'), icon: Activity },
+        { value: '/checkin', label: t('nav.checkin'), icon: Activity }
+      );
+      if (cycleSettings?.enabled) {
+        tabs.push({
+          value: '/cycle',
+          label: cycleSettings.discreet_mode
+            ? t('nav.wellness', 'Wellness')
+            : cycleSettings.mode === 'pregnant'
+              ? t('nav.pregnancy', 'Pregnancy')
+              : t('nav.cycle', 'Cycle'),
+          icon: cycleSettings.discreet_mode ? Activity : CalendarHeart,
+        });
+      }
+      tabs.push(
+        {
+          value: '/medications',
+          label: t('nav.medications', 'Medications'),
+          icon: Pill,
+        },
         { value: '/reports', label: t('nav.reports'), icon: BarChart3 },
         { value: '/foods', label: t('nav.foods'), icon: Utensils },
         {
@@ -217,6 +266,13 @@ const MainLayout: React.FC<MainLayoutProps> = ({ onShowAboutDialog }) => {
           icon: BarChart3,
         });
       }
+      if (hasWritePermission('can_manage_medications')) {
+        tabs.push({
+          value: '/medications',
+          label: t('nav.medications', 'Medications'),
+          icon: Pill,
+        });
+      }
     }
     if (user?.role === 'admin' && !isActingOnBehalf) {
       tabs.push({ value: '/admin', label: t('nav.admin'), icon: Shield });
@@ -229,6 +285,7 @@ const MainLayout: React.FC<MainLayoutProps> = ({ onShowAboutDialog }) => {
     loggingLevel,
     user?.role,
     t,
+    cycleSettings,
   ]);
 
   const availableMobileTabs = useMemo(() => {
@@ -239,6 +296,8 @@ const MainLayout: React.FC<MainLayoutProps> = ({ onShowAboutDialog }) => {
       isAddCompOpen,
     });
     const mobileTabs = [];
+    // Cycle/Pregnancy and Medications live in the "+" Add menu on mobile
+    // (see addCompItems), not the bottom bar, to keep the bar uncluttered.
     if (!isActingOnBehalf) {
       mobileTabs.push(
         { value: '/', label: t('nav.diary'), icon: Home },
@@ -266,6 +325,14 @@ const MainLayout: React.FC<MainLayoutProps> = ({ onShowAboutDialog }) => {
           value: '/reports',
           label: t('nav.reports'),
           icon: BarChart3,
+        });
+      }
+      // Delegates have no "+" Add menu on mobile, so medications stays in the bar.
+      if (hasWritePermission('can_manage_medications')) {
+        mobileTabs.push({
+          value: '/medications',
+          label: t('nav.medications', 'Medications'),
+          icon: Pill,
         });
       }
     }
@@ -318,6 +385,54 @@ const MainLayout: React.FC<MainLayoutProps> = ({ onShowAboutDialog }) => {
 
   const location = useLocation();
 
+  // Whether the current route is reachable for the active profile. When acting
+  // on behalf, a delegate only has a subset of tabs; landing on a disallowed
+  // route (e.g. staying on Diary after switching to a checkin-only profile)
+  // would otherwise mount that page and fire requests that 403.
+  const isCurrentPathAllowed = useMemo(() => {
+    if (!isActingOnBehalf || availableTabs.length === 0) {
+      return true;
+    }
+    const currentPath = location.pathname;
+    // Match exactly or as prefix (e.g. /medications/log should match /medications)
+    return availableTabs.some((tab) => {
+      if (tab.value === '/') {
+        return (
+          currentPath === '/' ||
+          currentPath === '/workout-playback' ||
+          currentPath.startsWith('/workout-playback/')
+        );
+      }
+      return (
+        currentPath === tab.value || currentPath.startsWith(tab.value + '/')
+      );
+    });
+  }, [isActingOnBehalf, availableTabs, location.pathname]);
+
+  useEffect(() => {
+    if (!isCurrentPathAllowed) {
+      const fallbackTab = availableTabs[0]?.value;
+      if (fallbackTab) {
+        debug(
+          loggingLevel,
+          `MainLayout: Redirecting from unauthorized path ${location.pathname} to ${fallbackTab}`
+        );
+        navigate(fallbackTab, { replace: true });
+      }
+    }
+  }, [
+    isCurrentPathAllowed,
+    availableTabs,
+    location.pathname,
+    navigate,
+    loggingLevel,
+  ]);
+
+  const selectedDate = new URLSearchParams(location.search).get('date');
+  const selectedDateRelation = selectedDate
+    ? getDateRelationToToday(selectedDate)
+    : 'today';
+
   return (
     <div className="min-h-screen bg-background">
       <div className="container mx-auto px-2 sm:px-4 py-4 sm:py-8">
@@ -345,6 +460,20 @@ const MainLayout: React.FC<MainLayoutProps> = ({ onShowAboutDialog }) => {
               Welcome {activeUserName}
             </span>
 
+            {onStartOnboarding && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onStartOnboarding}
+                className="flex items-center gap-2"
+                title="Complete your setup"
+              >
+                <span className="hidden sm:inline">
+                  {t('onboarding.completeSetup', 'Complete Setup')}
+                </span>
+                <span className="sm:hidden">Setup</span>
+              </Button>
+            )}
             <GlobalNotificationIcon />
             <GlobalSyncButton />
             <ThemeToggle />
@@ -362,13 +491,28 @@ const MainLayout: React.FC<MainLayoutProps> = ({ onShowAboutDialog }) => {
           </div>
         </div>
         <nav
-          className={`hidden sm:grid w-full gap-1 ${gridClass} mb-6 bg-slate-200/60 dark:bg-muted/50 p-1 rounded-lg`}
+          className={cn(
+            'relative hidden sm:grid w-full gap-1 mb-6 bg-slate-200/60 dark:bg-muted/50 p-1 rounded-lg border transition-colors overflow-hidden',
+            gridClass,
+            selectedDateRelation === 'today' && 'border-transparent',
+            selectedDateRelation === 'past' && 'border-date-past/40',
+            selectedDateRelation === 'future' && 'border-date-future/40'
+          )}
         >
+          {selectedDateRelation !== 'today' && (
+            <div
+              className={cn(
+                'absolute inset-0 pointer-events-none z-10',
+                selectedDateRelation === 'past' && 'bg-date-past/10',
+                selectedDateRelation === 'future' && 'bg-date-future/10'
+              )}
+            />
+          )}
           {availableTabs.map(({ value, label, icon: Icon }) => (
             <Button
               key={value}
               variant="ghost"
-              className={`flex items-center gap-2 hover:bg-background/50 transition-all ${
+              className={`relative flex items-center gap-2 hover:bg-background/50 transition-all ${
                 location.pathname === value
                   ? 'bg-background shadow-sm text-foreground'
                   : 'text-muted-foreground'
@@ -382,9 +526,24 @@ const MainLayout: React.FC<MainLayoutProps> = ({ onShowAboutDialog }) => {
         </nav>
 
         {/* Mobile Navigation */}
-        <nav className="apple-safe-area sm:hidden fixed bottom-0 left-0 right-0 z-50 w-full bg-background border-t">
+        <nav
+          className={cn(
+            'apple-safe-area sm:hidden fixed bottom-0 left-0 right-0 z-50 w-full bg-background border-t transition-colors overflow-hidden',
+            selectedDateRelation === 'past' && 'border-date-past/80',
+            selectedDateRelation === 'future' && 'border-date-future/50'
+          )}
+        >
+          {selectedDateRelation !== 'today' && (
+            <div
+              className={cn(
+                'absolute inset-0 pointer-events-none z-10',
+                selectedDateRelation === 'past' && 'bg-date-past/10',
+                selectedDateRelation === 'future' && 'bg-date-future/10'
+              )}
+            />
+          )}
           <div
-            className={`h-14 grid ${mobileGridClass} items-center justify-items-center`}
+            className={`relative h-14 grid ${mobileGridClass} items-center justify-items-center`}
           >
             {availableMobileTabs.map(({ value, icon: Icon }) => (
               <Button
@@ -412,7 +571,9 @@ const MainLayout: React.FC<MainLayoutProps> = ({ onShowAboutDialog }) => {
         </nav>
 
         <div className="pb-16 sm:pb-0">
-          <Outlet />
+          {/* Don't mount a disallowed page while the redirect effect runs, or it
+              fires requests the active profile isn't permitted to make. */}
+          {isCurrentPathAllowed ? <Outlet /> : null}
         </div>
 
         <SparkyChat />
@@ -440,15 +601,41 @@ const MainLayout: React.FC<MainLayoutProps> = ({ onShowAboutDialog }) => {
               <GitHubStarCounter owner="CodeWithCJ" repo="SparkyFitness" />
               <GitHubSponsorButton owner="CodeWithCJ" />
             </div>
-            <p className="cursor-pointer underline" onClick={onShowAboutDialog}>
-              SparkyFitness v{appVersion?.version ?? ''}
-            </p>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="cursor-pointer underline bg-transparent border-0 p-0 text-inherit font-normal text-sm"
+                onClick={onShowAboutDialog}
+              >
+                SparkyFitness v{appVersion?.version ?? ''}
+              </button>
+              <span>•</span>
+              <button
+                type="button"
+                className="cursor-pointer underline hover:text-foreground bg-transparent border-0 p-0 text-inherit font-normal text-sm"
+                onClick={onShowNewReleaseDialog}
+              >
+                What's New
+              </button>
+            </div>
           </div>
         ) : (
           <div className="flex justify-center items-center gap-4">
-            <p className="cursor-pointer underline" onClick={onShowAboutDialog}>
+            <button
+              type="button"
+              className="cursor-pointer underline bg-transparent border-0 p-0 text-inherit font-normal text-sm"
+              onClick={onShowAboutDialog}
+            >
               SparkyFitness v{appVersion?.version ?? ''}
-            </p>
+            </button>
+            <span>•</span>
+            <button
+              type="button"
+              className="cursor-pointer underline hover:text-foreground bg-transparent border-0 p-0 text-inherit font-normal text-sm"
+              onClick={onShowNewReleaseDialog}
+            >
+              What's New
+            </button>
           </div>
         )}
       </footer>

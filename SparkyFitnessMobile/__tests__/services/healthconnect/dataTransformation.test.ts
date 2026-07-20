@@ -1,7 +1,8 @@
-import { transformHealthRecords, extractTimezoneMetadata } from '../../../src/services/healthconnect/dataTransformation';
+import { transformHealthRecords, extractTimezoneMetadata, setOwnPackageName } from '../../../src/services/healthconnect/dataTransformation';
 import { toLocalDateString } from '../../../src/services/healthconnect/dataAggregation';
 import type {
   TransformedRecord,
+  TransformedNutritionEntry,
   AggregatedSleepSession,
   TransformedExerciseSession,
 } from '../../../src/types/healthRecords';
@@ -38,6 +39,16 @@ describe('transformHealthRecords', () => {
 
       expect(result).toHaveLength(1);
       expect(result[0]).toMatchObject({ date: '2024-01-15', value: 72, type: 'heart_rate' });
+    });
+
+    test('transforms raw HeartRateVariabilityRmssd records via value transformer', () => {
+      const records = [
+        { time: '2024-01-15T08:00:00Z', heartRateVariabilityMillis: 48 },
+      ];
+      const result = transformHealthRecords(records, { recordType: 'HeartRateVariabilityRmssd', unit: 'ms', type: 'HRV' });
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({ date: '2024-01-15', value: 48, type: 'HRV' });
     });
 
     test('passes through ActiveCaloriesBurned aggregated records', () => {
@@ -1234,14 +1245,111 @@ describe('transformHealthRecords', () => {
   });
 
   describe('other simple records', () => {
-    test('Nutrition extracts energy and converts to kcal', () => {
+    test('Nutrition extracts energy as kcal into a food entry', () => {
       const records = [
-        { startTime: '2024-01-15T08:00:00Z', energy: { inCalories: 500000 } },
+        { startTime: '2024-01-15T08:00:00Z', endTime: '2024-01-15T08:00:00Z', energy: { inCalories: 500000 }, mealType: 1, metadata: { id: 'hc-1' } },
       ];
-      const result = transformHealthRecords(records, { recordType: 'Nutrition', unit: 'kcal', type: 'nutrition' }) as TransformedRecord[];
+      const result = transformHealthRecords(records, { recordType: 'Nutrition', unit: 'kcal', type: 'nutrition' }) as TransformedNutritionEntry[];
 
       expect(result).toHaveLength(1);
-      expect(result[0].value).toBe(500); // 500000 / 1000
+      expect(result[0].type).toBe('Nutrition');
+      expect(result[0].calories).toBe(500); // 500000 calories / 1000 = 500 kcal
+      expect(result[0].meal_type).toBe('breakfast');
+    });
+
+    test('Nutrition omits bridge-default zero nutrients and rounds float noise', () => {
+      const records = [
+        {
+          startTime: '2024-01-15T08:00:00Z',
+          endTime: '2024-01-15T08:00:00Z',
+          name: 'Bio Volle Melk',
+          mealType: 1,
+          metadata: { id: 'hc-1' },
+          energy: { inKilocalories: 94.5 },
+          protein: { inGrams: 4.949999999999999 }, // float noise → 4.95
+          totalFat: { inGrams: 5.25 },
+          monounsaturatedFat: { inGrams: 0 }, // bridge default for "not provided"
+          cholesterol: { inGrams: 0 },
+          potassium: { inGrams: 0 },
+          sodium: { inGrams: 0.00015 }, // 0.00015 g → 0.15 mg
+        },
+      ];
+      const result = transformHealthRecords(records, { recordType: 'Nutrition', unit: 'kcal', type: 'nutrition' }) as TransformedNutritionEntry[];
+
+      expect(result[0].protein).toBe(4.95); // grams, rounded, no float noise
+      expect(result[0].fat).toBe(5.25); // grams
+      expect(result[0].sodium).toBe(0.15); // 0.00015 g converted to mg
+      // Zeros HC didn't truly set are omitted, not written as 0:
+      expect(result[0].monounsaturated_fat).toBeUndefined();
+      expect(result[0].cholesterol).toBeUndefined();
+      expect(result[0].potassium).toBeUndefined();
+    });
+
+    test('Nutrition converts each HC gram value to its Sparky column unit', () => {
+      const records = [
+        {
+          startTime: '2024-01-15T08:00:00Z',
+          endTime: '2024-01-15T08:00:00Z',
+          name: 'Unit Test Food',
+          mealType: 2,
+          metadata: { id: 'hc-1' },
+          protein: { inGrams: 12 }, // macro stays grams
+          cholesterol: { inGrams: 0.02 }, // g → mg: 20
+          sodium: { inGrams: 0.2 }, // g → mg: 200
+          potassium: { inGrams: 0.35 }, // g → mg: 350
+          calcium: { inGrams: 0.12 }, // g → mg: 120
+          iron: { inGrams: 0.008 }, // g → mg: 8
+          vitaminC: { inGrams: 0.06 }, // g → mg: 60
+          vitaminA: { inGrams: 0.0009 }, // g → mcg: 900
+          // No dedicated Sparky column → dropped (no canonical unit to store it in):
+          magnesium: { inGrams: 0.4 },
+        },
+      ];
+      const result = transformHealthRecords(records, { recordType: 'Nutrition', unit: 'kcal', type: 'nutrition' }) as TransformedNutritionEntry[];
+
+      expect(result[0].protein).toBe(12); // grams
+      expect(result[0].cholesterol).toBe(20); // mg
+      expect(result[0].sodium).toBe(200); // mg
+      expect(result[0].potassium).toBe(350); // mg
+      expect(result[0].calcium).toBe(120); // mg
+      expect(result[0].iron).toBe(8); // mg
+      expect(result[0].vitamin_c).toBe(60); // mg
+      expect(result[0].vitamin_a).toBe(900); // mcg
+      // Nutrients without a dedicated column are not forwarded at all:
+      expect(
+        (result[0] as unknown as { custom_nutrients?: unknown }).custom_nutrients
+      ).toBeUndefined();
+    });
+
+    test('Nutrition keys source_id off HC metadata.id (not clientRecordId)', () => {
+      const records = [
+        {
+          startTime: '2024-01-15T08:00:00Z',
+          name: 'Keyed Food',
+          mealType: 1,
+          metadata: { id: 'hc-uuid-123', clientRecordId: 'app-local-1' },
+        },
+      ];
+      const result = transformHealthRecords(records, { recordType: 'Nutrition', unit: 'kcal', type: 'nutrition' }) as TransformedNutritionEntry[];
+
+      expect(result[0].source_id).toBe('hc-uuid-123');
+    });
+
+    test('Nutrition skips records without an HC metadata.id (no dedupe key)', () => {
+      const records = [
+        { startTime: '2024-01-15T08:00:00Z', name: 'No Id Food', mealType: 1 },
+        {
+          startTime: '2024-01-15T09:00:00Z',
+          name: 'Has Id',
+          mealType: 1,
+          metadata: { id: 'hc-1' },
+        },
+      ];
+      const result = transformHealthRecords(records, { recordType: 'Nutrition', unit: 'kcal', type: 'nutrition' }) as TransformedNutritionEntry[];
+
+      // Only the record with a stable id is emitted.
+      expect(result).toHaveLength(1);
+      expect(result[0].source_id).toBe('hc-1');
     });
 
     test('RestingHeartRate extracts beatsPerMinute', () => {
@@ -1264,14 +1372,15 @@ describe('transformHealthRecords', () => {
       expect(result[0].value).toBe(16);
     });
 
-    test('Hydration extracts volume.inLiters', () => {
+    test('Hydration converts volume.inLiters to integer ml and maps to water intake', () => {
       const records = [
         { startTime: '2024-01-15T08:00:00Z', volume: { inLiters: 0.5 } },
       ];
-      const result = transformHealthRecords(records, { recordType: 'Hydration', unit: 'L', type: 'hydration' }) as TransformedRecord[];
+      const result = transformHealthRecords(records, { recordType: 'Hydration', unit: 'ml', type: 'water' }) as TransformedRecord[];
 
       expect(result).toHaveLength(1);
-      expect(result[0].value).toBe(0.5);
+      expect(result[0].value).toBe(500);
+      expect(result[0].type).toBe('water');
     });
 
     test('IntermenstrualBleeding returns value 1', () => {
@@ -1548,5 +1657,40 @@ describe('extractTimezoneMetadata', () => {
     // Some zones have 30/45-minute offsets (e.g., India UTC+5:30 = 19800s)
     const rec = { startZoneOffset: { totalSeconds: 19800 } };
     expect(extractTimezoneMetadata(rec)).toEqual({ record_utc_offset_minutes: 330 });
+  });
+});
+
+describe('own-app exclusion (writeback feedback-loop guard)', () => {
+  const OWN = 'com.sparky.app';
+  afterEach(() => setOwnPackageName(null)); // don't leak into other tests
+
+  test('Nutrition: records written by our own app are dropped, others pass', () => {
+    setOwnPackageName(OWN);
+    const records = [
+      { startTime: '2024-01-15T08:00:00Z', name: 'Ours', mealType: 1, metadata: { id: 'a', dataOrigin: OWN } },
+      { startTime: '2024-01-15T09:00:00Z', name: 'Theirs', mealType: 1, metadata: { id: 'b', dataOrigin: 'com.other.app' } },
+    ];
+    const result = transformHealthRecords(records, { recordType: 'Nutrition', unit: 'kcal', type: 'nutrition' }) as TransformedNutritionEntry[];
+    expect(result).toHaveLength(1);
+    expect(result[0].food_name).toBe('Theirs');
+  });
+
+  test('Hydration: records written by our own app are dropped, others pass', () => {
+    setOwnPackageName(OWN);
+    const records = [
+      { startTime: '2024-01-15T08:00:00Z', volume: { inLiters: 0.5 }, metadata: { dataOrigin: OWN } },
+      { startTime: '2024-01-15T09:00:00Z', volume: { inLiters: 0.3 }, metadata: { dataOrigin: 'com.other.app' } },
+    ];
+    const result = transformHealthRecords(records, { recordType: 'Hydration', unit: 'ml', type: 'water' }) as TransformedRecord[];
+    expect(result).toHaveLength(1);
+    expect(result[0].value).toBe(300);
+  });
+
+  test('with no own package set, nothing is excluded', () => {
+    const records = [
+      { startTime: '2024-01-15T08:00:00Z', name: 'X', mealType: 1, metadata: { id: 'a', dataOrigin: OWN } },
+    ];
+    const result = transformHealthRecords(records, { recordType: 'Nutrition', unit: 'kcal', type: 'nutrition' }) as TransformedNutritionEntry[];
+    expect(result).toHaveLength(1);
   });
 });

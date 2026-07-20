@@ -17,10 +17,11 @@ import Animated, {
   interpolateColor,
 } from 'react-native-reanimated';
 import Toast from 'react-native-toast-message';
-import Button from '../components/ui/Button';
 import Icon, { IconName } from '../components/Icon';
 import Clipboard from '@react-native-clipboard/clipboard';
 import { useActiveWorkoutBarPadding } from '../components/ActiveWorkoutBar';
+import { useScreenHeader } from '../hooks/useScreenHeader';
+import { useNativeIOSHeadersActive } from '../services/nativeTabBarPreference';
 import {
   getLogs,
   clearLogs,
@@ -125,7 +126,7 @@ const pluralize = (count: number, [singular, plural]: [string, string]): string 
 const LogScreen: React.FC<LogScreenProps> = ({ navigation }) => {
   const insets = useSafeAreaInsets();
   const activeWorkoutBarPadding = useActiveWorkoutBarPadding('stack');
-  const accentPrimary = useCSSVariable('--color-accent-primary') as string | undefined;
+  const usesNativeHeader = useNativeIOSHeadersActive();
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [selectedStatuses, setSelectedStatuses] = useState<LogStatus[]>([]);
 
@@ -187,6 +188,21 @@ const LogScreen: React.FC<LogScreenProps> = ({ navigation }) => {
   }, []);
 
   const hasLogs = logs.length > 0;
+
+  // Clear is destructive-ish but not a save, so it stays a neutral text action.
+  const header = useScreenHeader({
+    title: 'Logs',
+    left: { kind: 'back' },
+    right: {
+      kind: 'text',
+      label: 'Clear',
+      role: 'secondary',
+      disabled: !hasLogs,
+      onPress: handleClearLogs,
+      accessibilityLabel: 'Clear logs',
+      identifier: 'logs-clear',
+    },
+  });
 
   const handleCopyLogToClipboard = (item: LogEntry): void => {
     let logText = `Status: ${item.status}\n`;
@@ -258,30 +274,8 @@ const LogScreen: React.FC<LogScreenProps> = ({ navigation }) => {
   );
 
   return (
-    <View className="flex-1 bg-background" style={{ paddingTop: insets.top }}>
-      <View className="flex-row items-center px-4 py-3">
-        <Button
-          variant="ghost"
-          onPress={() => navigation.goBack()}
-          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-          className="py-0 px-0 mr-2"
-        >
-          <Icon name="chevron-back" size={22} color={accentPrimary} />
-        </Button>
-        <Text className="text-2xl font-bold text-text-primary">Logs</Text>
-        <View className="flex-1" />
-        <Button
-          variant="ghost"
-          onPress={handleClearLogs}
-          disabled={!hasLogs}
-          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-          className="py-0 px-0"
-        >
-          <Text className={`text-base font-medium ${hasLogs ? 'text-accent-primary' : 'text-text-muted'}`}>
-            Clear
-          </Text>
-        </Button>
-      </View>
+    <View className="flex-1 bg-background" style={usesNativeHeader ? undefined : { paddingTop: insets.top }}>
+      {header}
       <FlatList
         data={filteredLogs}
         ListHeaderComponent={ListHeader}

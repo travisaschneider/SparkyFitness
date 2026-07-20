@@ -27,6 +27,7 @@ import {
   Eye,
   MoreHorizontal,
   Edit,
+  Copy,
   Trash2,
 } from 'lucide-react';
 import {
@@ -67,6 +68,7 @@ import { useIsMobile } from '@/hooks/use-mobile';
 import { cn } from '@/lib/utils';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useCustomNutrients } from '@/hooks/Foods/useCustomNutrients';
+import { formatServingLabel } from '@/utils/foodServing';
 
 const FoodDatabaseManager = () => {
   const { t } = useTranslation();
@@ -105,10 +107,16 @@ const FoodDatabaseManager = () => {
     canEdit,
     handlePageChange,
     handleEdit,
+    handleDuplicate,
+    handleDuplicateComplete,
+    showDuplicateDialog,
+    duplicatingFood,
+    isDuplicating,
     handleSaveComplete,
     handleAddFoodToMeal,
     handleDeleteRequest,
     deleteFood,
+    mealTypes,
   } = useFoodDatabaseManager();
 
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
@@ -245,11 +253,17 @@ const FoodDatabaseManager = () => {
                 )}
               </div>
               <span className="text-[10px] text-gray-500">
-                {t('foodDatabaseManager.perServing', {
-                  servingSize: food.default_variant?.serving_size || 0,
-                  servingUnit: food.default_variant?.serving_unit || '',
-                  defaultValue: `Per ${food.default_variant?.serving_size || 0} ${food.default_variant?.serving_unit || ''}`,
-                })}
+                {food.default_variant
+                  ? t('foodDatabaseManager.perServing', {
+                      servingSize: formatServingLabel(food.default_variant),
+                      servingUnit: '',
+                      defaultValue: `Per ${formatServingLabel(food.default_variant)}`,
+                    })
+                  : t('foodDatabaseManager.perServing', {
+                      servingSize: 0,
+                      servingUnit: '',
+                      defaultValue: 'Per 0',
+                    })}
               </span>
               <AllergenBadges
                 allergens={food.default_variant?.allergens}
@@ -331,6 +345,13 @@ const FoodDatabaseManager = () => {
                   {t('foodDatabaseManager.editFood', 'Edit food')}
                 </DropdownMenuItem>
                 <DropdownMenuItem
+                  disabled={isDuplicating}
+                  onClick={() => handleDuplicate(food)}
+                >
+                  <Copy className="mr-2 h-4 w-4" />
+                  {t('foodDatabaseManager.duplicateFood', 'Duplicate food')}
+                </DropdownMenuItem>
+                <DropdownMenuItem
                   disabled={!isEditable}
                   onClick={() =>
                     togglePublicSharing({
@@ -374,6 +395,8 @@ const FoodDatabaseManager = () => {
       t,
       canEdit,
       handleEdit,
+      handleDuplicate,
+      isDuplicating,
       handleDeleteRequest,
       togglePublicSharing,
       getFoodSourceBadge,
@@ -601,6 +624,39 @@ const FoodDatabaseManager = () => {
         </DialogContent>
       </Dialog>
 
+      <Dialog
+        open={showDuplicateDialog}
+        onOpenChange={(open) => {
+          if (!open) handleDuplicateComplete();
+        }}
+      >
+        <DialogContent
+          requireConfirmation
+          className="max-w-4xl max-h-[90vh] overflow-y-auto"
+        >
+          <DialogHeader>
+            <DialogTitle>
+              {t(
+                'foodDatabaseManager.duplicateFoodDialogTitle',
+                'Duplicate Food'
+              )}
+            </DialogTitle>
+            <DialogDescription>
+              {t(
+                'foodDatabaseManager.duplicateFoodDialogDescription',
+                'Adjust the details and save this as a new food. The original is not changed.'
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          {duplicatingFood && (
+            <CustomFoodForm
+              food={duplicatingFood}
+              onSave={handleDuplicateComplete}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
+
       {/* FoodUnitSelector Dialog */}
       {foodToAddToMeal && (
         <FoodUnitSelector
@@ -608,6 +664,9 @@ const FoodDatabaseManager = () => {
           open={showFoodUnitSelectorDialog}
           onOpenChange={setShowFoodUnitSelectorDialog}
           onSelect={handleAddFoodToMeal}
+          showTimeInput={true}
+          showMealTypeSelect={true}
+          availableMealTypes={mealTypes}
         />
       )}
 
@@ -655,10 +714,19 @@ const FoodDatabaseManager = () => {
             <DialogDescription>
               {viewingFood && getFoodSourceBadge(viewingFood)}
               <div className="mt-2 text-base font-medium text-gray-600">
-                {t('foodDatabaseManager.perServing', {
-                  servingSize: viewingFood?.default_variant?.serving_size || 0,
-                  servingUnit: viewingFood?.default_variant?.serving_unit || '',
-                })}
+                {viewingFood?.default_variant
+                  ? t('foodDatabaseManager.perServing', {
+                      servingSize: formatServingLabel(
+                        viewingFood.default_variant
+                      ),
+                      servingUnit: '',
+                      defaultValue: `Per ${formatServingLabel(viewingFood.default_variant)}`,
+                    })
+                  : t('foodDatabaseManager.perServing', {
+                      servingSize: 0,
+                      servingUnit: '',
+                      defaultValue: 'Per 0',
+                    })}
               </div>
             </DialogDescription>
           </DialogHeader>

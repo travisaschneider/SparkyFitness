@@ -10,9 +10,10 @@ import {
 } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Clipboard } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import type { ExternalDataProvider } from './ExternalProviderSettings';
 import { toast } from '@/hooks/use-toast';
-import { getProviderTypes } from '@/utils/settings';
+import { useExternalProviderTypesQuery } from '@/hooks/Settings/useExternalProviderSettings';
 
 interface EditProviderFormProps {
   provider: ExternalDataProvider;
@@ -23,6 +24,7 @@ interface EditProviderFormProps {
   onSubmit: (providerId: string) => Promise<void>;
   onCancel: () => void;
   loading: boolean;
+  isAdminMode?: boolean;
 }
 
 export const EditProviderForm = ({
@@ -32,7 +34,10 @@ export const EditProviderForm = ({
   onSubmit,
   onCancel,
   loading,
+  isAdminMode = false,
 }: EditProviderFormProps) => {
+  const { t } = useTranslation();
+  const { data: providerTypes } = useExternalProviderTypesQuery();
   return (
     <form
       onSubmit={(e) => {
@@ -75,17 +80,46 @@ export const EditProviderForm = ({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {getProviderTypes().map((type) => (
-                <SelectItem key={type.value} value={type.value}>
-                  {type.label}
-                </SelectItem>
-              ))}
+              {(providerTypes || [])
+                .map((type) => ({
+                  value: type.id,
+                  label: type.display_name,
+                  is_strictly_private: type.is_strictly_private,
+                }))
+                .filter((type) => !isAdminMode || !type.is_strictly_private)
+                .map((type) => (
+                  <SelectItem key={type.value} value={type.value}>
+                    {type.label}
+                  </SelectItem>
+                ))}
             </SelectContent>
           </Select>
         </div>
       </div>
       {editData.provider_type === 'openfoodfacts' && (
         <>
+          <div>
+            <Label>
+              {t(
+                'settings.foodExerciseDataProviders.openFoodFacts.baseUrlLabel'
+              )}
+            </Label>
+            <Input
+              type="text"
+              value={editData.base_url || ''}
+              onChange={(e) =>
+                setEditData((prev) => ({
+                  ...prev,
+                  base_url: e.target.value,
+                }))
+              }
+              placeholder="https://world.openfoodfacts.org"
+              autoComplete="off"
+            />
+          </div>
+          <p className="text-sm text-muted-foreground col-span-2">
+            {t('settings.foodExerciseDataProviders.openFoodFacts.baseUrlHelp')}
+          </p>
           <div>
             <Label>Open Food Facts Username (Optional)</Label>
             <Input
@@ -861,6 +895,7 @@ export const EditProviderForm = ({
         />
         <Label>Activate this provider</Label>
       </div>
+      {/* Public sharing switch removed */}
       <div className="flex gap-2">
         <Button type="submit" disabled={loading}>
           Save Changes

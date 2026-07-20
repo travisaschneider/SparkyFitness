@@ -29,6 +29,10 @@ vi.mock('../middleware/checkPermissionMiddleware.js', () => ({
   default: vi.fn(() => (req: any, res: any, next: any) => next()),
 }));
 
+vi.mock('../utils/adminCheck.js', () => ({
+  resolveIsAdmin: vi.fn(async () => false),
+}));
+
 vi.mock('../config/logging.js', () => ({
   log: vi.fn(),
 }));
@@ -95,13 +99,15 @@ describe('POST /food-crud/scan-label', () => {
     expect(labelScanService.extractNutritionFromLabel).toHaveBeenCalledWith(
       'base64data',
       'image/png',
-      'user-123'
+      'user-123',
+      false
     );
   });
   it('should return 422 when service returns success: false', async () => {
     // @ts-expect-error TS(2339): Property 'mockResolvedValue' does not exist on typ... Remove this comment to see the full error message
     labelScanService.extractNutritionFromLabel.mockResolvedValue({
       success: false,
+      category: 'no_ai_configured',
       error: 'No AI service configured',
     });
     const res = await request(app)
@@ -114,6 +120,7 @@ describe('POST /food-crud/scan-label', () => {
     // @ts-expect-error TS(2339): Property 'mockResolvedValue' does not exist on typ... Remove this comment to see the full error message
     labelScanService.extractNutritionFromLabel.mockResolvedValue({
       success: false,
+      category: 'api_key_missing',
       error: 'API key missing for selected AI service.',
     });
     const res = await request(app)
@@ -121,6 +128,29 @@ describe('POST /food-crud/scan-label', () => {
       .send({ image: 'base64data', mime_type: 'image/jpeg' });
     expect(res.statusCode).toBe(422);
     expect(res.body.error).toBe('API key missing for selected AI service.');
+  });
+  // Documents the category → HTTP status contract; the Record over
+  // LabelScanErrorCategory in the route gives the compile-time completeness.
+  it.each([
+    ['timeout', 504],
+    ['upstream_error', 502],
+    ['unsupported_media', 400],
+    ['parse_error', 422],
+    ['api_key_missing', 422],
+    ['custom_url_missing', 422],
+    ['private_network_forbidden', 403],
+  ])('should map category %s to HTTP %i', async (category, status) => {
+    // @ts-expect-error TS(2339): Property 'mockResolvedValue' does not exist on typ... Remove this comment to see the full error message
+    labelScanService.extractNutritionFromLabel.mockResolvedValue({
+      success: false,
+      category,
+      error: 'Something went wrong upstream.',
+    });
+    const res = await request(app)
+      .post('/food-crud/scan-label')
+      .send({ image: 'base64data', mime_type: 'image/png' });
+    expect(res.statusCode).toBe(status);
+    expect(res.body).toEqual({ error: 'Something went wrong upstream.' });
   });
   it('should return 500 when service throws an unhandled error', async () => {
     // @ts-expect-error TS(2339): Property 'mockRejectedValue' does not exist on typ... Remove this comment to see the full error message
@@ -145,7 +175,8 @@ describe('POST /food-crud/scan-label', () => {
     expect(labelScanService.extractNutritionFromLabel).toHaveBeenCalledWith(
       'img',
       'image/png',
-      'user-123'
+      'user-123',
+      false
     );
   });
 });

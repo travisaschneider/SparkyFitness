@@ -9,6 +9,14 @@ import { fetchDailyGoals } from '../../src/services/api/goalsApi';
 import type { SaveFoodPayload } from '../../src/services/api/foodsApi';
 import { createTestQueryClient } from '../hooks/queryTestUtils';
 
+jest.mock('../../src/hooks', () => ({
+  useServerConnection: jest.fn(() => ({ isConnected: true, isLoading: false })),
+  useCustomNutrients: jest.fn(() => ({ customNutrients: [], isLoading: false, isError: false, refetch: jest.fn() })),
+  usePreferences: jest.fn(() => ({ preferences: undefined, isLoading: false })),
+}));
+jest.mock('../../src/hooks/useCustomNutrients', () => ({
+  useCustomNutrients: jest.fn(() => ({ customNutrients: [], isLoading: false, isError: false, refetch: jest.fn() })),
+}));
 jest.mock('../../src/hooks/useAddFoodEntry', () => ({
   useAddFoodEntry: jest.fn(),
 }));
@@ -28,7 +36,6 @@ jest.mock('react-native-toast-message', () => ({
 
 // Stub the bottom-sheet picker — surface the trigger only.
 jest.mock('../../src/components/BottomSheetPicker', () => {
-  const React = require('react');
   return {
     __esModule: true,
     default: ({ renderTrigger }: any) =>
@@ -44,6 +51,14 @@ jest.mock('../../src/components/CalendarSheet', () => {
   return {
     __esModule: true,
     default: React.forwardRef(() => null),
+  };
+});
+
+jest.mock('../../src/components/MacroCompositionRing', () => {
+  const { View } = require('react-native');
+  return {
+    __esModule: true,
+    default: () => <View testID="macro-composition-ring" />,
   };
 });
 

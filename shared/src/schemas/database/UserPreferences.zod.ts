@@ -11,7 +11,6 @@ export const userPreferencesSchema = z.object({
   default_measurement_unit: z.string(),
   created_at: z.date(),
   updated_at: z.date(),
-  system_prompt: z.string().nullable(),
   auto_clear_history: z.string().nullable(),
   logging_level: z.string().nullable(),
   timezone: z.string().nullable(),
@@ -37,6 +36,14 @@ export const userPreferencesSchema = z.object({
   default_barcode_provider_id: externalDataProvidersIdSchema.nullable(),
   first_day_of_week: z.number().int().min(0).max(6).nullable().optional(),
   ai_assisted_conversions: z.boolean(),
+  goal_mode: z.enum(['maintain', 'recomp', 'cut', 'high_cut', 'manual']),
+  goal_mode_calculation_method: z.enum(['adaptive', 'manual']),
+  goal_mode_custom_percentage: z.number().int().min(0).max(40),
+  measurement_decimal_places: z.number().int().min(0),
+  // Manually added (file is ts-to-zod generated; precedent: MealFoods.zod.ts). Keep on regen.
+  use_external_bmr: z.boolean(),
+  active_ai_service_id: z.string().uuid().nullable().optional(),
+  active_vision_ai_service_id: z.string().uuid().nullable().optional(),
 });
 
 export const userPreferencesInitializerSchema = z.object({
@@ -47,7 +54,6 @@ export const userPreferencesInitializerSchema = z.object({
   default_measurement_unit: z.string().optional(),
   created_at: z.date().optional(),
   updated_at: z.date().optional(),
-  system_prompt: z.string().optional().nullable(),
   auto_clear_history: z.string().optional().nullable(),
   logging_level: z.string().optional().nullable(),
   timezone: z.string().optional().nullable(),
@@ -75,6 +81,13 @@ export const userPreferencesInitializerSchema = z.object({
     .nullable(),
   first_day_of_week: z.number().int().min(0).max(6).nullable().optional(),
   ai_assisted_conversions: z.boolean().optional(),
+  goal_mode: z.enum(['maintain', 'recomp', 'cut', 'high_cut', 'manual']).optional(),
+  goal_mode_calculation_method: z.enum(['adaptive', 'manual']).optional(),
+  goal_mode_custom_percentage: z.number().int().min(0).max(40).optional(),
+  measurement_decimal_places: z.number().int().min(0).optional(),
+  use_external_bmr: z.boolean().optional(),
+  active_ai_service_id: z.string().uuid().nullable().optional(),
+  active_vision_ai_service_id: z.string().uuid().nullable().optional(),
 });
 
 export const userPreferencesMutatorSchema = z.object({
@@ -85,7 +98,6 @@ export const userPreferencesMutatorSchema = z.object({
   default_measurement_unit: z.string().optional(),
   created_at: z.date().optional(),
   updated_at: z.date().optional(),
-  system_prompt: z.string().optional().nullable(),
   auto_clear_history: z.string().optional().nullable(),
   logging_level: z.string().optional().nullable(),
   timezone: z.string().optional().nullable(),
@@ -113,6 +125,13 @@ export const userPreferencesMutatorSchema = z.object({
     .nullable(),
   first_day_of_week: z.number().int().min(0).max(6).nullable().optional(),
   ai_assisted_conversions: z.boolean().optional(),
+  goal_mode: z.enum(['maintain', 'recomp', 'cut', 'high_cut', 'manual']).optional(),
+  goal_mode_calculation_method: z.enum(['adaptive', 'manual']).optional(),
+  goal_mode_custom_percentage: z.number().int().min(0).max(40).optional(),
+  measurement_decimal_places: z.number().int().min(0).optional(),
+  use_external_bmr: z.boolean().optional(),
+  active_ai_service_id: z.string().uuid().nullable().optional(),
+  active_vision_ai_service_id: z.string().uuid().nullable().optional(),
 });
 
 export type UserPreferences = z.infer<typeof userPreferencesSchema>;

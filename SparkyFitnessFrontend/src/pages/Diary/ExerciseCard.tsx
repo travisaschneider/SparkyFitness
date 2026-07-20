@@ -33,6 +33,7 @@ import {
   useDeleteExercisePresetEntryMutation,
   useExerciseEntries,
 } from '@/hooks/Exercises/useExerciseEntries';
+import { resolveExerciseCalories } from '@workspace/shared';
 import { useQueryClient } from '@tanstack/react-query';
 import { exerciseByIdOptions } from '@/hooks/Exercises/useExercises';
 import { createWorkoutPlaybackRouteState } from '@/utils/workoutPlayback';
@@ -321,7 +322,8 @@ const ExerciseCard = ({
   };
 
   const stats = useMemo(() => {
-    let calories = 0;
+    let activeCalories = 0;
+    let otherCalories = 0;
     let duration = 0;
     let setsCount = 0;
     let hrSum = 0;
@@ -344,19 +346,29 @@ const ExerciseCard = ({
           : [groupedEntry];
 
       items.forEach((entry: ExerciseEntry) => {
-        // Calories
+        // Calories — keep the device-wide "Active Calories" summary separate
+        // from logged workouts so the total can be deduped, not summed (the
+        // summary already includes the workouts it overlaps with).
         const cal = entry.calories_burned;
-        if (cal) {
-          if (!isNaN(cal)) calories += cal;
+        if (cal && !isNaN(cal)) {
+          if (entry.exercise_snapshot?.name === 'Active Calories') {
+            activeCalories += cal;
+          } else {
+            otherCalories += cal;
+          }
         }
 
         // Duration & Sets
         if (entry.sets && entry.sets.length > 0) {
           setsCount += entry.sets.length;
-          duration += entry.sets.reduce<number>(
+          const setsDuration = entry.sets.reduce<number>(
             (sum, set) => sum + (set.duration || 0) + (set.rest_time || 0) / 60,
             0
           );
+          // Fall back to the entry-level duration when the sets carry no
+          // per-set timers (e.g. rep-based sets synced from Hevy).
+          duration +=
+            setsDuration > 0 ? setsDuration : entry.duration_minutes || 0;
         } else if (entry.duration_minutes) {
           duration += entry.duration_minutes;
         }
@@ -369,8 +381,17 @@ const ExerciseCard = ({
       });
     });
 
+    // "Active Calories" is a device-wide summary that already includes logged
+    // workouts, so take the larger of the two instead of adding both. Steps are
+    // intentionally excluded here so the total matches the listed rows.
+    const { calories: totalCalories } = resolveExerciseCalories(
+      otherCalories,
+      activeCalories,
+      0
+    );
+
     return {
-      totalCalories: calories,
+      totalCalories,
       totalDuration: duration,
       totalSets: setsCount,
       averageHeartRate: hrCount > 0 ? hrSum / hrCount : 0,

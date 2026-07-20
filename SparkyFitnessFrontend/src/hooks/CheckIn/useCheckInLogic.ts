@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { format, parseISO, subDays } from 'date-fns';
+import { parseISO } from 'date-fns';
 import { toast } from '@/hooks/use-toast';
 import { usePreferences } from '@/contexts/PreferencesContext';
 import { getMostRecentMeasurement } from '@/api/CheckIn/checkInService';
@@ -12,29 +12,90 @@ import { userManagementService } from '@/api/Admin/userManagementService';
 import {
   useCustomCategories,
   useDeleteCustomMeasurementMutation,
-  useExistingCheckInMeasurements,
+  useCheckInMeasurementsForDate,
+  useLatestCheckInMeasurements,
   useExistingCustomMeasurements,
   useRecentCustomMeasurements,
   useRecentStandardMeasurements,
   useSaveCheckInMeasurementsMutation,
   useSaveCustomMeasurementMutation,
-  useMostRecentMeasurement,
   useUpdateCheckInMeasurementFieldMutation,
 } from '@/hooks/CheckIn/useCheckIn';
 import {
   useMoodEntryByDate,
   useSaveMoodEntryMutation,
 } from '@/hooks/CheckIn/useMood';
-import { useFastingHistory } from '@/hooks/Fasting/useFasting';
-import { CombinedMeasurement } from '@/types/checkin';
+import {
+  useFastingHistory,
+  useDeleteFastMutation,
+} from '@/hooks/Fasting/useFasting';
+import { CheckInPlaceholders, CombinedMeasurement } from '@/types/checkin';
 import {
   CheckInMeasurementsResponse,
   CustomMeasurementsResponse,
   UpdateCheckInMeasurementsRequest,
   UpdateCustomMeasurementsRequest,
+  calculateAge,
 } from '@workspace/shared';
 import { useAuth } from '../useAuth';
 import { useSearchParams } from 'react-router-dom';
+import { addDays, todayInZone } from '@workspace/shared';
+
+/**
+ * Builds the check-in upsert payload with per-field edit semantics:
+ * a filled field is set, an emptied field that has a value recorded on this
+ * date is cleared (explicit null), and everything else is omitted so the
+ * server leaves it untouched.
+ */
+export function buildCheckInMeasurementsPayload(
+  entryDate: string,
+  form: {
+    weight: string;
+    neck: string;
+    waist: string;
+    hips: string;
+    steps: string;
+    height: string;
+    bodyFatPercentage: string;
+  },
+  existing: CheckInMeasurementsResponse | null | undefined
+): UpdateCheckInMeasurementsRequest {
+  const payload: UpdateCheckInMeasurementsRequest = { entry_date: entryDate };
+
+  const apply = (
+    key:
+      | 'weight'
+      | 'neck'
+      | 'waist'
+      | 'hips'
+      | 'steps'
+      | 'height'
+      | 'body_fat_percentage',
+    raw: string,
+    parse: (value: string) => number
+  ) => {
+    if (raw.trim() !== '') {
+      const parsed = parse(raw);
+      if (!Number.isNaN(parsed)) {
+        payload[key] = parsed;
+      }
+      return;
+    }
+    if (existing?.[key] != null) {
+      payload[key] = null;
+    }
+  };
+
+  apply('weight', form.weight, parseFloat);
+  apply('neck', form.neck, parseFloat);
+  apply('waist', form.waist, parseFloat);
+  apply('hips', form.hips, parseFloat);
+  apply('steps', form.steps, (value) => parseInt(value, 10));
+  apply('height', form.height, parseFloat);
+  apply('body_fat_percentage', form.bodyFatPercentage, parseFloat);
+
+  return payload;
+}
 
 function useDerivedState<T>(derivedValue: T, selectedDate: string) {
   const [stateMap, setStateMap] = useState<Record<string, T>>({});
@@ -70,13 +131,13 @@ export const useCheckInLogic = (currentUserId: string | undefined) => {
     measurementUnit: defaultMeasurementUnit,
     formatDateInUserTimezone,
     bodyFatAlgorithm,
+    timezone,
   } = usePreferences();
 
   const [searchParams] = useSearchParams();
 
   const [selectedDate, setSelectedDate] = useState(
-    searchParams.get('date') ??
-      formatDateInUserTimezone(new Date(), 'yyyy-MM-dd')
+    searchParams.get('date') ?? todayInZone(timezone)
   );
 
   const { mutateAsync: saveCheckInMeasurements, isPending: isSavingCheckIn } =
@@ -91,6 +152,7 @@ export const useCheckInLogic = (currentUserId: string | undefined) => {
   } = useUpdateCheckInMeasurementFieldMutation();
   const { mutateAsync: saveMoodEntry, isPending: isSavingMood } =
     useSaveMoodEntryMutation();
+  const { mutateAsync: deleteFast } = useDeleteFastMutation();
 
   const loading =
     isSavingCheckIn ||
@@ -102,23 +164,24 @@ export const useCheckInLogic = (currentUserId: string | undefined) => {
   const { data: customCategories = [] } = useCustomCategories(
     user?.activeUserId
   );
-  const { data: existingCheckIn } =
-    useExistingCheckInMeasurements(selectedDate);
+  // Form values come from what was actually recorded on the selected date;
+  // the latest carried-forward values are only shown as input placeholders.
+  const { data: existingCheckIn } = useCheckInMeasurementsForDate(selectedDate);
+  const { data: latestCheckIn } = useLatestCheckInMeasurements(selectedDate);
   const { data: existingCustom } = useExistingCustomMeasurements(selectedDate);
   const { data: existingMood } = useMoodEntryByDate(selectedDate);
 
   const { data: recentCustom = [] } = useRecentCustomMeasurements();
-  const startDate = format(subDays(new Date(), 30), 'yyyy-MM-dd');
-  const endDate = format(new Date(), 'yyyy-MM-dd');
+  const endDate = todayInZone(timezone);
+  const startDate = addDays(endDate, -30);
   const { data: recentStandard = [] } = useRecentStandardMeasurements(
     startDate,
     endDate
   );
   const { data: recentFasting = [] } = useFastingHistory(10, 0);
-  const { data: mostRecentHeightData } = useMostRecentMeasurement('height');
 
   const [useMostRecentForCalculation, setUseMostRecentForCalculation] =
-    useState(false);
+    useState(true);
 
   const shouldConvertCustomMeasurement = useCallback((unit: string) => {
     const convertibleUnits = ['kg', 'lbs', 'st_lbs', 'cm', 'inches', 'ft_in'];
@@ -154,19 +217,11 @@ export const useCheckInLogic = (currentUserId: string | undefined) => {
   }, [existingCheckIn?.hips]);
 
   const derivedHeight = useMemo(() => {
-    // Height rarely changes day to day. If the selected date's row has a
-    // valid height use it; otherwise fall back to the user's most recent
-    // recorded height so the field isn't empty on a fresh check-in.
     const h = existingCheckIn?.height;
-    if (h != null && h > 0) {
-      return h.toString();
-    }
-    const recent = mostRecentHeightData?.height;
-    if (recent != null && recent > 0) {
-      return recent.toString();
-    }
-    return '';
-  }, [existingCheckIn?.height, mostRecentHeightData?.height]);
+    if (h == null) return '';
+    // State should be Metric (cm).
+    return h.toString();
+  }, [existingCheckIn?.height]);
 
   const derivedBodyFat = useMemo(() => {
     return existingCheckIn?.body_fat_percentage?.toString() || '';
@@ -183,6 +238,10 @@ export const useCheckInLogic = (currentUserId: string | undefined) => {
   const derivedMoodNotes = useMemo(() => {
     return existingMood?.notes || '';
   }, [existingMood?.notes]);
+
+  const derivedMoodTags = useMemo(() => {
+    return existingMood?.mood_tags ?? [];
+  }, [existingMood?.mood_tags]);
 
   const { derivedCustomValues, derivedCustomNotes } = useMemo(() => {
     const newCustomValues: Record<string, string> = {};
@@ -226,19 +285,9 @@ export const useCheckInLogic = (currentUserId: string | undefined) => {
   const [neck, setNeck] = useDerivedState<string>(derivedNeck, selectedDate);
   const [waist, setWaist] = useDerivedState<string>(derivedWaist, selectedDate);
   const [hips, setHips] = useDerivedState<string>(derivedHips, selectedDate);
-  const [height, setHeightState] = useDerivedState<string>(
+  const [height, setHeight] = useDerivedState<string>(
     derivedHeight,
     selectedDate
-  );
-  const [heightTouchedDates, setHeightTouchedDates] = useState<
-    Record<string, boolean>
-  >({});
-  const setHeight = useCallback(
-    (value: string) => {
-      setHeightTouchedDates((prev) => ({ ...prev, [selectedDate]: true }));
-      setHeightState(value);
-    },
-    [selectedDate, setHeightState]
   );
   const [steps, setSteps] = useDerivedState<string>(derivedSteps, selectedDate);
   const [bodyFatPercentage, setBodyFatPercentage] = useDerivedState<string>(
@@ -250,12 +299,30 @@ export const useCheckInLogic = (currentUserId: string | undefined) => {
     derivedMoodNotes,
     selectedDate
   );
+  const [moodTags, setMoodTags] = useDerivedState<string[]>(
+    derivedMoodTags,
+    selectedDate
+  );
   const [customValues, setCustomValues] = useDerivedState<
     Record<string, string>
   >(derivedCustomValues, selectedDate);
   const [customNotes, setCustomNotes] = useDerivedState<Record<string, string>>(
     derivedCustomNotes,
     selectedDate
+  );
+
+  // Latest recorded values (on or before the selected date), shown as input
+  // placeholders so past measurements give context without being resubmitted.
+  const placeholders: CheckInPlaceholders = useMemo(
+    () => ({
+      weight: latestCheckIn?.weight ?? null,
+      neck: latestCheckIn?.neck ?? null,
+      waist: latestCheckIn?.waist ?? null,
+      hips: latestCheckIn?.hips ?? null,
+      height: latestCheckIn?.height ?? null,
+      bodyFatPercentage: latestCheckIn?.body_fat_percentage ?? null,
+    }),
+    [latestCheckIn]
   );
 
   const recentMeasurements = useMemo(() => {
@@ -379,6 +446,7 @@ export const useCheckInLogic = (currentUserId: string | undefined) => {
         display_unit: 'min',
         fasting_type: fast.fasting_type,
         duration_minutes: fast.duration_minutes || 0,
+        originalFast: fast,
       });
     });
 
@@ -407,6 +475,9 @@ export const useCheckInLogic = (currentUserId: string | undefined) => {
 
     if (measurement.type === 'custom') {
       await deleteCustomMeasurement(measurement.id);
+    } else if (measurement.type === 'fasting') {
+      const fastId = measurement.originalId || measurement.id;
+      await deleteFast(fastId);
     } else if (measurement.type === 'standard') {
       const standardId = measurement.originalId || measurement.id;
       let fieldToNull: string;
@@ -445,9 +516,8 @@ export const useCheckInLogic = (currentUserId: string | undefined) => {
     }
   };
 
-  const handleSubmit = async (e: React.SubmitEvent) => {
+  const handleSaveMood = async (e: React.FormEvent) => {
     e.preventDefault();
-
     if (!currentUserId) return;
 
     try {
@@ -457,37 +527,37 @@ export const useCheckInLogic = (currentUserId: string | undefined) => {
         moodValue: moodToSend,
         notes: moodNotes,
         entryDate: selectedDate,
+        moodTags,
       });
 
-      const measurementData: UpdateCheckInMeasurementsRequest = {
-        entry_date: selectedDate,
-      };
+      toast({
+        title: t('checkIn.moodSaved', 'Mood Saved'),
+        description: t(
+          'checkIn.moodSavedSuccessfully',
+          'Mood saved successfully.'
+        ),
+      });
+    } catch (error) {
+      console.error(error);
+      toast({
+        title: t('common.error', 'Error'),
+        description: t('checkIn.failedToSaveMood', 'Failed to save mood.'),
+        variant: 'destructive',
+      });
+    }
+  };
 
-      if (weight) {
-        measurementData.weight = parseFloat(weight);
-      }
-      if (neck) {
-        measurementData.neck = parseFloat(neck);
-      }
-      if (waist) {
-        measurementData.waist = parseFloat(waist);
-      }
-      if (hips) {
-        measurementData.hips = parseFloat(hips);
-      }
-      if (steps) {
-        measurementData.steps = parseInt(steps);
-      }
-      const shouldSubmitHeight =
-        height !== '' &&
-        ((existingCheckIn?.height != null && existingCheckIn.height > 0) ||
-          heightTouchedDates[selectedDate] === true);
-      if (shouldSubmitHeight) {
-        measurementData.height = parseFloat(height);
-      }
-      if (bodyFatPercentage) {
-        measurementData.body_fat_percentage = parseFloat(bodyFatPercentage);
-      }
+  const handleSubmit = async (e: React.SubmitEvent) => {
+    e.preventDefault();
+
+    if (!currentUserId) return;
+
+    try {
+      const measurementData = buildCheckInMeasurementsPayload(
+        selectedDate,
+        { weight, neck, waist, hips, steps, height, bodyFatPercentage },
+        existingCheckIn
+      );
 
       await saveCheckInMeasurements(measurementData);
 
@@ -564,8 +634,7 @@ export const useCheckInLogic = (currentUserId: string | undefined) => {
       }
 
       const age = userProfile.date_of_birth
-        ? new Date().getFullYear() -
-          new Date(userProfile.date_of_birth).getFullYear()
+        ? calculateAge(userProfile.date_of_birth, timezone)
         : 0;
       const gender = userProfile.gender;
 
@@ -671,7 +740,9 @@ export const useCheckInLogic = (currentUserId: string | undefined) => {
     loading,
     mood,
     moodNotes,
+    moodTags,
     neck,
+    placeholders,
     recentMeasurements,
     selectedDate,
     setBodyFatPercentage,
@@ -681,6 +752,7 @@ export const useCheckInLogic = (currentUserId: string | undefined) => {
     setHips,
     setMood,
     setMoodNotes,
+    setMoodTags,
     setNeck,
     setSelectedDate,
     setSteps,
@@ -692,5 +764,7 @@ export const useCheckInLogic = (currentUserId: string | undefined) => {
     useMostRecentForCalculation,
     waist,
     weight,
+    handleSaveMood,
+    isSavingMood,
   };
 };

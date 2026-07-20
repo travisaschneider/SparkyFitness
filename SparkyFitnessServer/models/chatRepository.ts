@@ -1,8 +1,15 @@
 import { getClient, getSystemClient } from '../db/poolManager.js';
 import { encrypt, decrypt, ENCRYPTION_KEY } from '../security/encryption.js';
 import { log } from '../config/logging.js';
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function upsertAiServiceSetting(settingData: any) {
+import {
+  AiServiceSettings,
+  SparkyChatHistory,
+  SparkyChatHistoryMutator,
+} from '@workspace/shared';
+
+async function upsertAiServiceSetting(
+  settingData: Partial<AiServiceSettings> & { api_key?: string | null }
+) {
   const client = await getClient(settingData.user_id); // User-specific operation
   try {
     let encryptedApiKey = settingData.encrypted_api_key || null;
@@ -26,8 +33,9 @@ async function upsertAiServiceSetting(settingData: any) {
           encrypted_api_key = COALESCE($7, encrypted_api_key),
           api_key_iv = COALESCE($8, api_key_iv),
           api_key_tag = COALESCE($9, api_key_tag),
+          chat_tool_profile = COALESCE($10, chat_tool_profile),
           updated_at = now()
-        WHERE id = $10 RETURNING *`,
+        WHERE id = $11 RETURNING *`,
         [
           settingData.service_name,
           settingData.service_type,
@@ -38,6 +46,7 @@ async function upsertAiServiceSetting(settingData: any) {
           encryptedApiKey,
           apiKeyIv,
           apiKeyTag,
+          settingData.chat_tool_profile ?? null,
           settingData.id,
         ]
       );
@@ -47,8 +56,8 @@ async function upsertAiServiceSetting(settingData: any) {
       const result = await client.query(
         `INSERT INTO ai_service_settings (
           user_id, service_name, service_type, custom_url, system_prompt,
-          is_active, model_name, encrypted_api_key, api_key_iv, api_key_tag, created_at, updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now(), now()) RETURNING *`,
+          is_active, model_name, encrypted_api_key, api_key_iv, api_key_tag, chat_tool_profile, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now(), now()) RETURNING *`,
         [
           settingData.user_id,
           settingData.service_name,
@@ -60,6 +69,7 @@ async function upsertAiServiceSetting(settingData: any) {
           encryptedApiKey,
           apiKeyIv,
           apiKeyTag,
+          settingData.chat_tool_profile ?? 'full',
         ]
       );
       return result.rows[0];
@@ -68,13 +78,12 @@ async function upsertAiServiceSetting(settingData: any) {
     client.release();
   }
 }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function getAiServiceSettingForBackend(id: any, userId: any) {
+async function getAiServiceSettingForBackend(id: string, userId: string) {
   const client = await getClient(userId); // User-specific operation
   try {
     // Try to get setting (can be user-specific or global)
     const result = await client.query(
-      'SELECT * FROM ai_service_settings WHERE id = $1',
+      'SELECT * FROM ai_service_settings WHERE id = $1 AND is_active = TRUE',
       [id]
     );
     const setting = result.rows[0];
@@ -106,8 +115,49 @@ async function getAiServiceSettingForBackend(id: any, userId: any) {
     client.release();
   }
 }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function getAiServiceSettingById(id: any, userId: any) {
+// Decrypt-and-return a single setting WITHOUT the `is_active = TRUE` filter that
+// getAiServiceSettingForBackend applies — the connection test must work for an
+// inactive service too. The user-scoped client preserves RLS: a user reads only
+// their own private rows plus `is_public` global rows, so this serves both the
+// per-user and admin/global test contexts without leaking other users' keys.
+async function getDecryptedAiServiceSettingById(id: string, userId: string) {
+  const client = await getClient(userId); // User-specific operation (RLS-scoped)
+  try {
+    const result = await client.query(
+      'SELECT * FROM ai_service_settings WHERE id = $1',
+      [id]
+    );
+    const setting = result.rows[0];
+    if (!setting) return null;
+    let decryptedApiKey = null;
+    if (
+      setting.encrypted_api_key &&
+      setting.api_key_iv &&
+      setting.api_key_tag
+    ) {
+      try {
+        decryptedApiKey = await decrypt(
+          setting.encrypted_api_key,
+          setting.api_key_iv,
+          setting.api_key_tag,
+          ENCRYPTION_KEY
+        );
+      } catch (e) {
+        log('error', 'Error decrypting API key for AI service setting:', id, e);
+      }
+    }
+    return {
+      service_type: setting.service_type,
+      api_key: decryptedApiKey,
+      custom_url: setting.custom_url,
+      model_name: setting.model_name,
+      is_public: setting.is_public,
+    };
+  } finally {
+    client.release();
+  }
+}
+async function getAiServiceSettingById(id: string, userId: string) {
   const client = await getClient(userId); // User-specific operation
   try {
     const result = await client.query(
@@ -119,8 +169,7 @@ async function getAiServiceSettingById(id: any, userId: any) {
     client.release();
   }
 }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function deleteAiServiceSetting(id: any, userId: any) {
+async function deleteAiServiceSetting(id: string, userId: string) {
   const client = await getClient(userId); // User-specific operation
   try {
     const result = await client.query(
@@ -132,28 +181,24 @@ async function deleteAiServiceSetting(id: any, userId: any) {
     client.release();
   }
 }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function getAiServiceSettingsByUserId(userId: any) {
+async function getAiServiceSettingsByUserId(userId: string) {
   const client = await getClient(userId); // User-specific operation
   try {
     // Get user-specific settings
     const userResult = await client.query(
-      'SELECT id, service_name, service_type, custom_url, is_active, model_name, is_public, system_prompt FROM ai_service_settings WHERE is_public = FALSE AND user_id = $1 ORDER BY created_at DESC',
+      'SELECT id, service_name, service_type, custom_url, is_active, model_name, is_public, system_prompt, user_id, chat_tool_profile FROM ai_service_settings WHERE is_public = FALSE AND user_id = $1 ORDER BY created_at DESC',
       [userId]
     );
-    // Get global settings (all authenticated users can read)
+    // Get global settings (admin-created, all authenticated users can read)
     const globalResult = await client.query(
-      'SELECT id, service_name, service_type, custom_url, is_active, model_name, is_public, system_prompt FROM ai_service_settings WHERE is_public = TRUE ORDER BY created_at DESC',
+      'SELECT id, service_name, service_type, custom_url, is_active, model_name, is_public, system_prompt, user_id, chat_tool_profile FROM ai_service_settings WHERE is_public = TRUE ORDER BY created_at DESC',
       []
     );
-    // Combine results: user settings first, then public settings
-    // Add is_public flag to distinguish them
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // Combine results: user settings first, then global settings
     const userSettings = userResult.rows.map((row: any) => ({
       ...row,
       is_public: false,
     }));
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const publicSettings = globalResult.rows.map((row: any) => ({
       ...row,
       is_public: true,
@@ -163,33 +208,57 @@ async function getAiServiceSettingsByUserId(userId: any) {
     client.release();
   }
 }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function getActiveAiServiceSetting(userId: any) {
+async function getActiveAiServiceSetting(userId: string) {
   const client = await getClient(userId); // User-specific operation
   try {
+    // Priority 0: check if user has active_ai_service_id in user_preferences
+    const prefResult = await client.query(
+      'SELECT active_ai_service_id FROM user_preferences WHERE user_id = $1',
+      [userId]
+    );
+    if (prefResult.rows.length > 0 && prefResult.rows[0].active_ai_service_id) {
+      const activeId = prefResult.rows[0].active_ai_service_id;
+      const settingResult = await client.query(
+        `SELECT ai.id, ai.service_name, ai.service_type, ai.custom_url, ai.is_active, ai.model_name, ai.is_public, ai.system_prompt, ai.user_id, ai.chat_tool_profile, u.name as creator_name
+         FROM ai_service_settings ai
+         LEFT JOIN public."user" u ON ai.user_id = u.id
+         WHERE ai.id = $1 AND ai.is_active = TRUE`,
+        [activeId]
+      );
+      if (settingResult.rows.length > 0) {
+        const setting = settingResult.rows[0];
+        const source = setting.is_public ? 'global' : 'user';
+        log(
+          'debug',
+          `Using preferred AI service setting for user ${userId}: ${setting.id} (source: ${source})`
+        );
+        return { ...setting, source };
+      }
+    }
+
     // Priority 1: User-specific active setting
     const userResult = await client.query(
-      'SELECT id, service_name, service_type, custom_url, is_active, model_name, is_public, system_prompt FROM ai_service_settings WHERE is_active = TRUE AND is_public = FALSE AND user_id = $1 ORDER BY created_at DESC LIMIT 1',
+      'SELECT id, service_name, service_type, custom_url, is_active, model_name, is_public, system_prompt, user_id, chat_tool_profile FROM ai_service_settings WHERE is_active = TRUE AND is_public = FALSE AND user_id = $1 ORDER BY created_at DESC LIMIT 1',
       [userId]
     );
     if (userResult.rows.length > 0) {
       const setting = userResult.rows[0];
       log(
         'debug',
-        `Using user-specific AI service setting for user ${userId}: ${setting.id}`
+        `Using user-specific AI service setting fallback for user ${userId}: ${setting.id}`
       );
       return { ...setting, source: 'user' };
     }
     // Priority 2: Database global active setting
     const globalResult = await client.query(
-      'SELECT id, service_name, service_type, custom_url, is_active, model_name, is_public, system_prompt FROM ai_service_settings WHERE is_active = TRUE AND is_public = TRUE ORDER BY created_at DESC LIMIT 1',
+      'SELECT id, service_name, service_type, custom_url, is_active, model_name, is_public, system_prompt, user_id, chat_tool_profile FROM ai_service_settings WHERE is_active = TRUE AND is_public = TRUE ORDER BY created_at DESC LIMIT 1',
       []
     );
     if (globalResult.rows.length > 0) {
       const setting = globalResult.rows[0];
       log(
         'debug',
-        `Using global database AI service setting for user ${userId}: ${setting.id}`
+        `Using global database AI service setting fallback for user ${userId}: ${setting.id}`
       );
       return { ...setting, source: 'global' };
     }
@@ -199,8 +268,91 @@ async function getActiveAiServiceSetting(userId: any) {
     client.release();
   }
 }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function clearOldChatHistory(userId: any) {
+// Resolves the AI service to use for vision tasks (food-photo, label scan).
+// The existing active/default service is the text default; vision falls back to
+// it unless the user (or admin, for defaulted users) points vision elsewhere.
+// See models/chatRepository getActiveAiServiceSetting for the text counterpart.
+async function getActiveVisionAiServiceSetting(userId: string) {
+  const client = await getClient(userId); // User-specific operation
+  try {
+    // Read both pointers up front: step 1 needs the vision pointer, and step 3
+    // compares active_ai_service_id against the resolved base to tell a
+    // genuinely-defaulted user apart from one whose explicit text pick is live.
+    const prefResult = await client.query(
+      'SELECT active_ai_service_id, active_vision_ai_service_id FROM user_preferences WHERE user_id = $1',
+      [userId]
+    );
+    const prefs = prefResult.rows[0];
+
+    // 1. Explicit per-user vision override (mirrors Priority-0 of the text
+    //    resolver) — honored only while the pointed-to service is active.
+    if (prefs && prefs.active_vision_ai_service_id) {
+      const visionId = prefs.active_vision_ai_service_id;
+      const settingResult = await client.query(
+        `SELECT ai.id, ai.service_name, ai.service_type, ai.custom_url, ai.is_active, ai.model_name, ai.is_public, ai.system_prompt, ai.user_id, ai.chat_tool_profile, u.name as creator_name
+         FROM ai_service_settings ai
+         LEFT JOIN public."user" u ON ai.user_id = u.id
+         WHERE ai.id = $1 AND ai.is_active = TRUE`,
+        [visionId]
+      );
+      if (settingResult.rows.length > 0) {
+        const setting = settingResult.rows[0];
+        const source = setting.is_public ? 'global' : 'user';
+        log(
+          'debug',
+          `Using preferred vision AI service setting for user ${userId}: ${setting.id} (source: ${source})`
+        );
+        return { ...setting, source };
+      }
+    }
+
+    // 2. No usable vision override → the text/default service is the baseline.
+    const base = await getActiveAiServiceSetting(userId);
+    if (!base) return null;
+
+    // 3. Apply the admin global vision default only to users effectively on the
+    //    global default: the base resolved as a global service AND the user's
+    //    explicit text pointer did not resolve to it. Keying off whether the
+    //    pointer actually resolved (active_ai_service_id === base.id) — rather
+    //    than merely whether it is set — means a user whose explicitly-chosen
+    //    service was later deactivated (and who has fallen through to the global
+    //    default) still gets the configured vision default, while a live explicit
+    //    pick is never silently redirected. We read global_settings with the
+    //    user-scoped client (the table has no RLS and grants SELECT to the app
+    //    role) to avoid the system-client read in globalSettingsRepository that
+    //    logs every field.
+    if (base.source === 'global' && prefs?.active_ai_service_id !== base.id) {
+      const globalResult = await client.query(
+        'SELECT default_vision_ai_service_id FROM global_settings WHERE id = 1',
+        []
+      );
+      const defaultVisionId =
+        globalResult.rows[0]?.default_vision_ai_service_id;
+      if (defaultVisionId) {
+        // Enforce is_public in the query so the repository upholds the
+        // global-only invariant even though the admin UI only lists globals.
+        const visionResult = await client.query(
+          'SELECT id, service_name, service_type, custom_url, is_active, model_name, is_public, system_prompt, user_id FROM ai_service_settings WHERE id = $1 AND is_active = TRUE AND is_public = TRUE',
+          [defaultVisionId]
+        );
+        if (visionResult.rows.length > 0) {
+          const setting = visionResult.rows[0];
+          log(
+            'debug',
+            `Using global vision AI service default for user ${userId}: ${setting.id}`
+          );
+          return { ...setting, source: 'global' };
+        }
+      }
+    }
+
+    // 4. Otherwise reuse the text service for vision.
+    return base;
+  } finally {
+    client.release();
+  }
+}
+async function clearOldChatHistory(userId: string) {
   const client = await getClient(userId);
   try {
     await client.query(
@@ -215,12 +367,14 @@ async function clearOldChatHistory(userId: any) {
     client.release();
   }
 }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function getChatHistoryByUserId(userId: any) {
+async function getChatHistoryByUserId(userId: string) {
   const client = await getClient(userId); // User-specific operation
   try {
+    // Fetch the 50 most recent messages (ORDER BY created_at DESC LIMIT 50)
+    // and sort them chronologically (ORDER BY created_at ASC) in the outer query
+    // so that the AI context and UI display them in the correct chronological order.
     const result = await client.query(
-      'SELECT id, content, message_type, created_at, metadata, parts FROM sparky_chat_history WHERE user_id = $1 ORDER BY created_at ASC LIMIT 50',
+      'SELECT id, content, message_type, created_at, metadata, parts FROM (SELECT id, content, message_type, created_at, metadata, parts FROM sparky_chat_history WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50) sub ORDER BY created_at ASC',
       [userId]
     );
     return result.rows;
@@ -228,8 +382,7 @@ async function getChatHistoryByUserId(userId: any) {
     client.release();
   }
 }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function getChatHistoryEntryById(id: any, userId: any) {
+async function getChatHistoryEntryById(id: string, userId: string) {
   const client = await getClient(userId); // User-specific operation (RLS will handle access)
   try {
     const result = await client.query(
@@ -241,8 +394,7 @@ async function getChatHistoryEntryById(id: any, userId: any) {
     client.release();
   }
 }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function getChatHistoryEntryOwnerId(id: any, userId: any) {
+async function getChatHistoryEntryOwnerId(id: string, userId: string) {
   const client = await getClient(userId); // User-specific operation (RLS will handle access)
   try {
     const result = await client.query(
@@ -254,8 +406,11 @@ async function getChatHistoryEntryOwnerId(id: any, userId: any) {
     client.release();
   }
 }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function updateChatHistoryEntry(id: any, userId: any, updateData: any) {
+async function updateChatHistoryEntry(
+  id: string,
+  userId: string,
+  updateData: SparkyChatHistoryMutator
+) {
   const client = await getClient(userId); // User-specific operation
   try {
     const result = await client.query(
@@ -286,8 +441,7 @@ async function updateChatHistoryEntry(id: any, userId: any, updateData: any) {
     client.release();
   }
 }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function deleteChatHistoryEntry(id: any, userId: any) {
+async function deleteChatHistoryEntry(id: string, userId: string) {
   const client = await getClient(userId); // User-specific operation
   try {
     const result = await client.query(
@@ -299,8 +453,7 @@ async function deleteChatHistoryEntry(id: any, userId: any) {
     client.release();
   }
 }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function clearAllChatHistory(userId: any) {
+async function clearAllChatHistory(userId: string) {
   const client = await getClient(userId); // User-specific operation
   try {
     await client.query('DELETE FROM sparky_chat_history', []);
@@ -309,8 +462,11 @@ async function clearAllChatHistory(userId: any) {
     client.release();
   }
 }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function saveChatHistory(historyData: any) {
+async function saveChatHistory(
+  historyData: Partial<SparkyChatHistory> & {
+    messageType?: 'user' | 'assistant';
+  }
+) {
   const client = await getClient(historyData.user_id); // User-specific operation
   try {
     await client.query(
@@ -329,8 +485,9 @@ async function saveChatHistory(historyData: any) {
     client.release();
   }
 }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function upsertGlobalAiServiceSetting(settingData: any) {
+async function upsertGlobalAiServiceSetting(
+  settingData: Partial<AiServiceSettings> & { api_key?: string | null }
+) {
   const client = await getSystemClient(); // Use system client for global operations
   try {
     let encryptedApiKey = settingData.encrypted_api_key || null;
@@ -354,8 +511,9 @@ async function upsertGlobalAiServiceSetting(settingData: any) {
           encrypted_api_key = COALESCE($7, encrypted_api_key),
           api_key_iv = COALESCE($8, api_key_iv),
           api_key_tag = COALESCE($9, api_key_tag),
+          chat_tool_profile = COALESCE($10, chat_tool_profile),
           updated_at = now()
-        WHERE id = $10 AND is_public = TRUE RETURNING *`,
+        WHERE id = $11 AND is_public = TRUE RETURNING *`,
         [
           settingData.service_name,
           settingData.service_type,
@@ -366,6 +524,7 @@ async function upsertGlobalAiServiceSetting(settingData: any) {
           encryptedApiKey,
           apiKeyIv,
           apiKeyTag,
+          settingData.chat_tool_profile ?? null,
           settingData.id,
         ]
       );
@@ -375,8 +534,8 @@ async function upsertGlobalAiServiceSetting(settingData: any) {
       const result = await client.query(
         `INSERT INTO ai_service_settings (
           user_id, is_public, service_name, service_type, custom_url, system_prompt,
-          is_active, model_name, encrypted_api_key, api_key_iv, api_key_tag, created_at, updated_at
-        ) VALUES (NULL, TRUE, $1, $2, $3, $4, $5, $6, $7, $8, $9, now(), now()) RETURNING *`,
+          is_active, model_name, encrypted_api_key, api_key_iv, api_key_tag, chat_tool_profile, created_at, updated_at
+        ) VALUES (NULL, TRUE, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now(), now()) RETURNING *`,
         [
           settingData.service_name,
           settingData.service_type,
@@ -387,6 +546,7 @@ async function upsertGlobalAiServiceSetting(settingData: any) {
           encryptedApiKey,
           apiKeyIv,
           apiKeyTag,
+          settingData.chat_tool_profile ?? 'full',
         ]
       );
       return result.rows[0];
@@ -399,7 +559,7 @@ async function getGlobalAiServiceSettings() {
   const client = await getSystemClient(); // Use system client for global operations
   try {
     const result = await client.query(
-      'SELECT id, service_name, service_type, custom_url, is_active, model_name, is_public, system_prompt, created_at, updated_at FROM ai_service_settings WHERE is_public = TRUE ORDER BY created_at DESC',
+      'SELECT id, service_name, service_type, custom_url, is_active, model_name, is_public, system_prompt, created_at, updated_at, chat_tool_profile FROM ai_service_settings WHERE is_public = TRUE ORDER BY created_at DESC',
       []
     );
     return result.rows;
@@ -407,8 +567,7 @@ async function getGlobalAiServiceSettings() {
     client.release();
   }
 }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function getGlobalAiServiceSettingById(id: any) {
+async function getGlobalAiServiceSettingById(id: string) {
   const client = await getSystemClient(); // Use system client for global operations
   try {
     const result = await client.query(
@@ -420,8 +579,7 @@ async function getGlobalAiServiceSettingById(id: any) {
     client.release();
   }
 }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function deleteGlobalAiServiceSetting(id: any) {
+async function deleteGlobalAiServiceSetting(id: string) {
   const client = await getSystemClient(); // Use system client for global operations
   try {
     const result = await client.query(
@@ -436,9 +594,11 @@ async function deleteGlobalAiServiceSetting(id: any) {
 export { upsertAiServiceSetting };
 export { getAiServiceSettingById };
 export { getAiServiceSettingForBackend };
+export { getDecryptedAiServiceSettingById };
 export { deleteAiServiceSetting };
 export { getAiServiceSettingsByUserId };
 export { getActiveAiServiceSetting };
+export { getActiveVisionAiServiceSetting };
 export { clearOldChatHistory };
 export { getChatHistoryByUserId };
 export { getChatHistoryEntryById };
@@ -455,9 +615,11 @@ export default {
   upsertAiServiceSetting,
   getAiServiceSettingById,
   getAiServiceSettingForBackend,
+  getDecryptedAiServiceSettingById,
   deleteAiServiceSetting,
   getAiServiceSettingsByUserId,
   getActiveAiServiceSetting,
+  getActiveVisionAiServiceSetting,
   clearOldChatHistory,
   getChatHistoryByUserId,
   getChatHistoryEntryById,

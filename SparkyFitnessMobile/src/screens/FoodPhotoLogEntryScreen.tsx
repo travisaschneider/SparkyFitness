@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -20,6 +20,7 @@ import CalendarSheet, { type CalendarSheetRef } from '../components/CalendarShee
 import { useAddFoodEntry } from '../hooks/useAddFoodEntry';
 import { useMealTypes } from '../hooks/useMealTypes';
 import { usePreferences } from '../hooks';
+import { useHeaderActionColors } from '../hooks/useHeaderActionColors';
 import { getNetCarbsValue } from '../utils/nutrientUtils';
 import { goalsQueryKey } from '../hooks/queryKeys';
 import { fetchDailyGoals } from '../services/api/goalsApi';
@@ -58,10 +59,8 @@ type Props = FoodPhotoFlowScreenProps<'LogEntry'>;
 
 const FoodPhotoLogEntryScreen: React.FC<Props> = ({ navigation, route }) => {
   const insets = useSafeAreaInsets();
-  const [accentPrimary, textPrimary] = useCSSVariable([
-    '--color-accent-primary',
-    '--color-text-primary',
-  ]) as [string, string];
+  const textPrimary = useCSSVariable('--color-text-primary') as string;
+  const { backColor } = useHeaderActionColors();
 
   const { saveFoodPayload } = route.params;
 
@@ -106,11 +105,11 @@ const FoodPhotoLogEntryScreen: React.FC<Props> = ({ navigation, route }) => {
     fat: goalPercent(displayValues.fat * servingsNumber, goals?.fat),
   };
 
-  useEffect(() => {
-    if (!selectedMealTypeId && defaultMealTypeId) {
-      setSelectedMealTypeId(defaultMealTypeId);
-    }
-  }, [defaultMealTypeId, selectedMealTypeId]);
+  // Default the meal type once the default arrives. Done during render (instead
+  // of in an effect); the `!selectedMealTypeId` guard makes it self-limiting.
+  if (!selectedMealTypeId && defaultMealTypeId) {
+    setSelectedMealTypeId(defaultMealTypeId);
+  }
 
   const { addEntryAsync, isPending, invalidateCache } = useAddFoodEntry({
     onSuccess: () => {
@@ -194,7 +193,7 @@ const FoodPhotoLogEntryScreen: React.FC<Props> = ({ navigation, route }) => {
           className="z-10 p-0"
           accessibilityLabel="Back"
         >
-          <Icon name="chevron-back" size={22} color={accentPrimary} />
+          <Icon name="chevron-back" size={22} color={backColor} />
         </Button>
         <Text className="absolute left-0 right-0 text-center text-text-primary text-lg font-semibold">
           Log entry

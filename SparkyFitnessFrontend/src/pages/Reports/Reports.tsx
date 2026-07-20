@@ -1,13 +1,18 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { FastingReport } from '@/pages/Reports/FastingReport';
+import MedicationReports from '@/pages/Reports/MedicationReports';
 import { usePreferences } from '@/contexts/PreferencesContext';
 import { useActiveUser } from '@/contexts/ActiveUserContext';
 import ZoomableChart from '@/components/ZoomableChart';
 import ReportsControls from '@/pages/Reports/ReportsControls';
 import NutritionPeriodSummary from '@/pages/Reports/NutritionPeriodSummary';
 import NutritionChartsGrid from '@/pages/Reports/NutritionChartsGrid';
-import MeasurementChartsGrid from '@/pages/Reports/MeasurementChartsGrid';
+import WidgetGrid from '@/components/widgets/WidgetGrid';
+import {
+  generateReportsMeasurementsDefaultLayouts,
+  useMeasurementChartWidgets,
+} from '@/pages/Reports/MeasurementChartsGrid';
 import ReportsTables from '@/pages/Reports/ReportsTables';
 import ExerciseReportsDashboard from '@/pages/Reports/ExerciseReportsDashboard';
 import SleepReport from '@/pages/Reports/SleepReport';
@@ -136,9 +141,23 @@ const Reports = () => {
     measurementData = [],
     customCategories = [],
     customMeasurementsData = [],
+    sleepAnalyticsData = [],
+    medications = [],
+    medicationEntries = [],
+    symptomEntries = [],
+    injections = [],
+    titrationSteps = [],
   } = reportsData || {};
 
-  const { data: goalData } = useDailyGoalsRange(startDate, endDate);
+  const { data: goalData } = useDailyGoalsRange(startDate, endDate, true, true);
+
+  const measurementChartWidgets = useMeasurementChartWidgets({
+    // Pass the raw (possibly undefined) value so the hook's stable
+    // EMPTY_MEASUREMENTS fallback is used while loading. The destructured
+    // `measurementData` above defaults to a fresh `[]` each render, which
+    // would defeat that and re-compute every widget.
+    measurementData: reportsData?.measurementData,
+  });
 
   const handleStartDateChange = (date: string) => {
     debug(loggingLevel, 'Reports: Start date change handler called:', {
@@ -191,7 +210,13 @@ const Reports = () => {
         return (
           <div className="space-y-6">
             <ChartErrorBoundary>
-              <MeasurementChartsGrid measurementData={measurementData ?? []} />
+              <WidgetGrid
+                pageKey="reports-measurements"
+                widgets={measurementChartWidgets}
+                generateDefaultLayouts={
+                  generateReportsMeasurementsDefaultLayouts
+                }
+              />
             </ChartErrorBoundary>
             <ChartErrorBoundary>
               <BodyBatteryCard
@@ -326,6 +351,27 @@ const Reports = () => {
                 })
               }
               customNutrients={customNutrients}
+            />
+          </ChartErrorBoundary>
+        );
+      case 'medications-reports':
+        return (
+          <ChartErrorBoundary>
+            <MedicationReports
+              startDate={startDate}
+              endDate={endDate}
+              nutritionData={nutritionData}
+              tabularData={tabularData}
+              exerciseEntries={exerciseEntries}
+              measurementData={measurementData}
+              customCategories={customCategories}
+              customMeasurementsData={customMeasurementsData}
+              sleepAnalyticsData={sleepAnalyticsData}
+              medications={medications}
+              medicationEntries={medicationEntries}
+              symptomEntries={symptomEntries}
+              injections={injections}
+              titrationSteps={titrationSteps}
             />
           </ChartErrorBoundary>
         );

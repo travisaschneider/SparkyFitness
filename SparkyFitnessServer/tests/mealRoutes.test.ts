@@ -7,7 +7,7 @@ import mealService from '../services/mealService.js';
 import errorHandler from '../middleware/errorHandler.js';
 import { v4 as uuidv4 } from 'uuid';
 // Mock middleware and service
-vi.mock('../services/mealService');
+vi.mock('../services/mealService.js');
 vi.mock('../middleware/authMiddleware', () => ({
   authenticate: vi.fn((req, res, next) => {
     req.userId = 'testUserId';
@@ -110,6 +110,29 @@ describe('Meal Routes', () => {
         'testUserId',
         3
       );
+    });
+  });
+  describe('GET /meals/top', () => {
+    it('should return the most frequently logged meals for the user', async () => {
+      const meals = [{ id: uuidv4(), name: 'Top Meal' }];
+      // @ts-expect-error TS(2339): Property 'mockResolvedValue' does not exist on typ... Remove this comment to see the full error message
+      mealService.getTopMeals.mockResolvedValue(meals);
+      const res = await request(app).get('/meals/top?limit=5');
+      expect(res.statusCode).toEqual(200);
+      expect(res.body).toEqual(meals);
+      expect(mealService.getTopMeals).toHaveBeenCalledWith('testUserId', 5);
+      expect(mealService.getMealById).not.toHaveBeenCalled();
+    });
+    it('should clamp and default the top meals limit', async () => {
+      // @ts-expect-error TS(2339): Property 'mockResolvedValue' does not exist on typ... Remove this comment to see the full error message
+      mealService.getTopMeals.mockResolvedValue([]);
+      await request(app).get('/meals/top?limit=200');
+      expect(mealService.getTopMeals).toHaveBeenLastCalledWith(
+        'testUserId',
+        20
+      );
+      await request(app).get('/meals/top?limit=bad');
+      expect(mealService.getTopMeals).toHaveBeenLastCalledWith('testUserId', 3);
     });
   });
   describe('GET /meals/:id', () => {

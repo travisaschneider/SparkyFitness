@@ -2,7 +2,6 @@ import {
   syncHealthData,
   checkServerConnection,
   HealthDataPayload,
-  fetchWithTimeout,
   fetchWithRetry,
   CHUNK_SIZE,
   SESSION_CHUNK_SIZE,
@@ -54,59 +53,6 @@ describe('healthDataApi', () => {
   afterEach(() => {
     jest.useRealTimers();
     jest.restoreAllMocks();
-  });
-
-  describe('fetchWithTimeout', () => {
-    test('resolves when fetch completes before timeout', async () => {
-      const mockResponse = { ok: true, status: 200 };
-      mockFetch.mockResolvedValue(mockResponse);
-
-      const result = await fetchWithTimeout(
-        'https://example.com',
-        { method: 'GET' },
-        5000,
-      );
-
-      expect(result).toBe(mockResponse);
-      expect(mockFetch).toHaveBeenCalledTimes(1);
-    });
-
-    test('throws when fetch exceeds timeout', async () => {
-      // Signal-aware mock that rejects on abort (like real fetch)
-      mockFetch.mockImplementation((_url: string, options?: RequestInit) => {
-        return new Promise((_resolve, reject) => {
-          options?.signal?.addEventListener('abort', () => {
-            const err = new Error('The operation was aborted');
-            err.name = 'AbortError';
-            reject(err);
-          });
-        });
-      });
-
-      const promise = fetchWithTimeout('https://example.com', {}, 5000);
-      // Attach handler BEFORE advancing timers to avoid unhandled rejection
-      const assertion = expect(promise).rejects.toThrow('Request timed out after 5000ms');
-
-      await jest.advanceTimersByTimeAsync(5000);
-
-      await assertion;
-    });
-
-    test('passes options through to fetch', async () => {
-      mockFetch.mockResolvedValue({ ok: true });
-
-      const headers = { Authorization: 'Bearer token' };
-      await fetchWithTimeout(
-        'https://example.com',
-        { method: 'POST', headers, body: '{}' },
-        5000,
-      );
-
-      expect(mockFetch).toHaveBeenCalledWith(
-        'https://example.com',
-        expect.objectContaining({ method: 'POST', headers, body: '{}' }),
-      );
-    });
   });
 
   describe('fetchWithRetry', () => {
@@ -390,17 +336,16 @@ describe('healthDataApi', () => {
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
-    test('returns parsed JSON response on success', async () => {
-      const responseData = { success: true, count: 2 };
+    test('returns sync summary on success', async () => {
       mockGetActiveServerConfig.mockResolvedValue(testConfig);
       mockFetch.mockResolvedValue({
         ok: true,
-        json: () => Promise.resolve(responseData),
+        json: () => Promise.resolve({ success: true, count: 2 }),
       });
 
       const result = await syncHealthData(testData);
 
-      expect(result).toEqual(responseData);
+      expect(result).toEqual({ recordsSent: 2, recordErrors: [] });
     });
 
     test('throws error on non-OK 4xx response without retry', async () => {
@@ -497,7 +442,7 @@ describe('healthDataApi', () => {
 
         const result = await syncHealthData(testData);
 
-        expect(result).toEqual({ success: true });
+        expect(result).toEqual({ recordsSent: 2, recordErrors: [] });
         expect(mockFetch).toHaveBeenCalled();
       });
 
@@ -511,8 +456,188 @@ describe('healthDataApi', () => {
 
         const result = await syncHealthData(testData);
 
-        expect(result).toEqual({ success: true });
+        expect(result).toEqual({ recordsSent: 2, recordErrors: [] });
         expect(mockFetch).toHaveBeenCalled();
+      });
+    });
+
+    describe('per-record error contract', () => {
+      // Poison-pill regression: a partial-failure 200 must resolve (so the
+      // cursor advances) with the rejections carried in the summary.
+      test('resolves with record errors when server reports partial failure', async () => {
+        mockGetActiveServerConfig.mockResolvedValue(testConfig);
+        const rejected = {
+          error: 'Invalid value for step. Must be an integer.',
+          entry: { type: 'steps', value: 'bad' },
+        };
+        mockFetch.mockResolvedValue({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              message: 'Some health data entries could not be processed.',
+              processed: [{ type: 'calories', status: 'success', data: {} }],
+              errors: [rejected],
+              skipped: [],
+            }),
+        });
+
+        const result = await syncHealthData(testData);
+
+        expect(result).toEqual({ recordsSent: 2, recordErrors: [rejected] });
+      });
+
+      test('resolves clean when response has no errors field (old server)', async () => {
+        mockGetActiveServerConfig.mockResolvedValue(testConfig);
+        mockFetch.mockResolvedValue({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              message: 'All health data successfully processed.',
+              processed: [{ type: 'steps', status: 'success', data: {} }],
+            }),
+        });
+
+        const result = await syncHealthData(testData);
+
+        expect(result).toEqual({ recordsSent: 2, recordErrors: [] });
+      });
+
+      test('excludes skipped records from recordErrors and the all-failed guard', async () => {
+        mockGetActiveServerConfig.mockResolvedValue(testConfig);
+        mockFetch.mockResolvedValue({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              message: 'All health data successfully processed.',
+              processed: [],
+              errors: [],
+              skipped: [
+                { reason: 'Nutrition record without source_id', entry: {} },
+              ],
+            }),
+        });
+
+        const result = await syncHealthData(testData);
+
+        expect(result).toEqual({ recordsSent: 2, recordErrors: [] });
+      });
+
+      test('throws when a chunk is rejected in full by the server', async () => {
+        mockGetActiveServerConfig.mockResolvedValue(testConfig);
+        mockFetch.mockResolvedValue({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              message: 'Some health data entries could not be processed.',
+              processed: [],
+              errors: [
+                { error: 'bad record', entry: {} },
+                { error: 'bad record', entry: {} },
+              ],
+              skipped: [],
+            }),
+        });
+
+        await expect(syncHealthData(testData)).rejects.toThrow(
+          'rejected in full by server',
+        );
+      });
+
+      test('treats legacy 400 with processed records as partial success', async () => {
+        mockGetActiveServerConfig.mockResolvedValue(testConfig);
+        const legacyBody = JSON.stringify({
+          message: 'Some health data entries could not be processed.',
+          processed: [{ type: 'steps', status: 'success', data: {} }],
+          errors: [{ error: 'Invalid value for step.', entry: { type: 'steps' } }],
+        });
+        mockFetch.mockResolvedValue({
+          ok: false,
+          status: 400,
+          text: () => Promise.resolve(legacyBody),
+        });
+
+        const result = await syncHealthData(testData);
+
+        expect(result).toEqual({
+          recordsSent: 2,
+          recordErrors: [
+            { error: 'Invalid value for step.', entry: { type: 'steps' } },
+          ],
+        });
+      });
+
+      test('throws on legacy 400 when no records were processed', async () => {
+        mockGetActiveServerConfig.mockResolvedValue(testConfig);
+        const legacyBody = JSON.stringify({
+          message: 'Some health data entries could not be processed.',
+          processed: [],
+          errors: [{ error: 'Invalid value for step.', entry: {} }],
+        });
+        mockFetch.mockResolvedValue({
+          ok: false,
+          status: 400,
+          text: () => Promise.resolve(legacyBody),
+        });
+
+        await expect(syncHealthData(testData)).rejects.toThrow(
+          'Server error: 400',
+        );
+      });
+
+      test('throws on 400 with malformed-body error shape', async () => {
+        mockGetActiveServerConfig.mockResolvedValue(testConfig);
+        mockFetch.mockResolvedValue({
+          ok: false,
+          status: 400,
+          text: () =>
+            Promise.resolve(
+              JSON.stringify({ error: 'Invalid request body format.' }),
+            ),
+        });
+
+        await expect(syncHealthData(testData)).rejects.toThrow(
+          'Server error: 400',
+        );
+      });
+
+      test('aggregates record errors across multiple chunks', async () => {
+        mockGetActiveServerConfig.mockResolvedValue(testConfig);
+        const firstError = { error: 'bad record in chunk 1', entry: { i: 1 } };
+        const secondError = { error: 'bad record in chunk 2', entry: { i: 2 } };
+        mockFetch
+          .mockResolvedValueOnce({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                processed: [{ type: 'steps', status: 'success', data: {} }],
+                errors: [firstError],
+                skipped: [],
+              }),
+          })
+          .mockResolvedValueOnce({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                processed: [{ type: 'steps', status: 'success', data: {} }],
+                errors: [secondError],
+                skipped: [],
+              }),
+          });
+
+        const totalRecords = CHUNK_SIZE + 100;
+        const data = Array.from({ length: totalRecords }, (_, i) => ({
+          type: 'steps',
+          date: '2024-01-01',
+          value: i,
+        }));
+
+        const result = await syncHealthData(data);
+
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+        expect(result).toEqual({
+          recordsSent: totalRecords,
+          recordErrors: [firstError, secondError],
+        });
       });
     });
 
@@ -892,6 +1017,26 @@ describe('healthDataApi', () => {
       const result = await checkServerConnection();
 
       expect(result).toBe(false);
+    });
+
+    test('returns false when the server never responds (timeout)', async () => {
+      mockGetActiveServerConfig.mockResolvedValue(testConfig);
+      // Signal-aware mock that rejects on abort (like real fetch)
+      mockFetch.mockImplementation((_url: string, options?: RequestInit) => {
+        return new Promise((_resolve, reject) => {
+          options?.signal?.addEventListener('abort', () => {
+            const err = new Error('The operation was aborted');
+            err.name = 'AbortError';
+            reject(err);
+          });
+        });
+      });
+
+      const promise = checkServerConnection();
+
+      await jest.advanceTimersByTimeAsync(10_000);
+
+      await expect(promise).resolves.toBe(false);
     });
 
     test('removes trailing slash from URL', async () => {

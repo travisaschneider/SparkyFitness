@@ -8,12 +8,14 @@ import {
   computeExerciseCredited,
   computeCalorieProgress,
 } from '@/utils/calorieCalculations';
+import { computeCalorieTarget, getGoalModeDeficit } from '@workspace/shared';
 
 // ---------------------------------------------------------------------------
 // ACTIVITY_MULTIPLIERS
 // ---------------------------------------------------------------------------
 describe('ACTIVITY_MULTIPLIERS', () => {
   it('has expected multiplier for each level', () => {
+    expect(ACTIVITY_MULTIPLIERS['none']).toBe(1.0);
     expect(ACTIVITY_MULTIPLIERS['not_much']).toBe(1.2);
     expect(ACTIVITY_MULTIPLIERS['light']).toBe(1.375);
     expect(ACTIVITY_MULTIPLIERS['moderate']).toBe(1.55);
@@ -82,6 +84,10 @@ describe('computeSparkyfitnessBurned', () => {
 
   it('multiplies BMR by the moderate multiplier', () => {
     expect(computeSparkyfitnessBurned(2000, 'moderate')).toBe(3100);
+  });
+
+  it('applies no multiplier for the "none" activity level', () => {
+    expect(computeSparkyfitnessBurned(2000, 'none')).toBe(2000);
   });
 
   it('falls back to the not_much multiplier for unknown activity level', () => {
@@ -237,5 +243,136 @@ describe('computeCalorieProgress', () => {
   it('clamps to 0 and never goes negative', () => {
     // remaining > goal means nothing consumed
     expect(computeCalorieProgress(2000, 3000)).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getGoalModeDeficit
+// ---------------------------------------------------------------------------
+describe('getGoalModeDeficit', () => {
+  it('returns correct deficits for standard modes', () => {
+    expect(getGoalModeDeficit('maintain')).toBe(0.0);
+    expect(getGoalModeDeficit('recomp')).toBe(0.1);
+    expect(getGoalModeDeficit('cut')).toBe(0.15);
+    expect(getGoalModeDeficit('high_cut')).toBe(0.2);
+  });
+
+  it('handles custom percentage in manual mode', () => {
+    expect(getGoalModeDeficit('manual', 12)).toBe(0.12);
+    expect(getGoalModeDeficit('manual', 45)).toBe(0.4); // capped at 40%
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeCalorieTarget
+// ---------------------------------------------------------------------------
+describe('computeCalorieTarget', () => {
+  it('calculates correct targets under manual goal mode', () => {
+    const result = computeCalorieTarget({
+      goalMode: 'recomp',
+      calculationMethod: 'manual',
+      customPercentage: 0,
+      bmr: 1500,
+      activityLevelMultiplier: 1.2,
+      adaptiveTdee: null,
+      adaptiveTdeeFallback: true,
+      adaptiveTdeeDaysOfData: 0,
+      weightKg: 70,
+      heightCm: 170,
+      age: 30,
+      gender: 'male',
+      currentGoalCalories: 2000,
+    });
+    expect(result.finalTarget).toBe(1800);
+    expect(result.appliedDeficit).toBe(200);
+  });
+
+  it('applies fallback and caps at safety floor under adaptive method', () => {
+    const result = computeCalorieTarget({
+      goalMode: 'high_cut',
+      calculationMethod: 'adaptive',
+      customPercentage: 0,
+      bmr: 1800,
+      activityLevelMultiplier: 1.2,
+      adaptiveTdee: null,
+      adaptiveTdeeFallback: true,
+      adaptiveTdeeDaysOfData: 0,
+      weightKg: 84.5,
+      heightCm: 180,
+      age: 35,
+      gender: 'male',
+      currentGoalCalories: 2000,
+    });
+    // Target 2160 * 0.8 = 1728, gets auto-raised to max(1800 BMR, 1500 absolute) = 1800
+    expect(result.target).toBe(1728);
+    expect(result.finalTarget).toBe(1800);
+  });
+
+  it('targets the adaptive TDEE exactly under maintain with sufficient data', () => {
+    const result = computeCalorieTarget({
+      goalMode: 'maintain',
+      calculationMethod: 'adaptive',
+      customPercentage: 0,
+      bmr: 1800,
+      activityLevelMultiplier: 1.2,
+      adaptiveTdee: 2194,
+      adaptiveTdeeFallback: false,
+      adaptiveTdeeDaysOfData: 35,
+      weightKg: 84.5,
+      heightCm: 180,
+      age: 35,
+      gender: 'male',
+      currentGoalCalories: 2000,
+    });
+    expect(result.baselineTdee).toBe(2194);
+    expect(result.appliedDeficit).toBe(0);
+    // 2194 > max(1800 RMR, 1500 absolute), so no floor clamp
+    expect(result.finalTarget).toBe(2194);
+    expect(result.insufficientHistory).toBe(false);
+  });
+
+  it('keeps the adaptive baseline constant across all goal modes (issue #1710)', () => {
+    const goalModes = ['maintain', 'recomp', 'cut', 'high_cut', 'manual'];
+    for (const goalMode of goalModes) {
+      const result = computeCalorieTarget({
+        goalMode,
+        calculationMethod: 'adaptive',
+        // Non-zero percentage on the 'manual' iteration must not leak into the baseline
+        customPercentage: 12,
+        bmr: 1800,
+        activityLevelMultiplier: 1.2,
+        adaptiveTdee: 2194,
+        adaptiveTdeeFallback: false,
+        adaptiveTdeeDaysOfData: 35,
+        weightKg: 84.5,
+        heightCm: 180,
+        age: 35,
+        gender: 'male',
+        currentGoalCalories: 2000,
+      });
+      expect(result.baselineTdee).toBe(2194);
+    }
+  });
+
+  it('falls back to BMR x activity multiplier under maintain with insufficient history', () => {
+    const result = computeCalorieTarget({
+      goalMode: 'maintain',
+      calculationMethod: 'adaptive',
+      customPercentage: 0,
+      bmr: 1800,
+      activityLevelMultiplier: 1.2,
+      adaptiveTdee: null,
+      adaptiveTdeeFallback: true,
+      adaptiveTdeeDaysOfData: 0,
+      weightKg: 84.5,
+      heightCm: 180,
+      age: 35,
+      gender: 'male',
+      currentGoalCalories: 2000,
+    });
+    expect(result.baselineTdee).toBe(2160);
+    expect(result.insufficientHistory).toBe(true);
+    expect(result.appliedDeficit).toBe(0);
+    expect(result.finalTarget).toBe(2160);
   });
 });

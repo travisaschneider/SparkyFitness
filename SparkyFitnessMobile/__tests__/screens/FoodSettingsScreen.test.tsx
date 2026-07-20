@@ -1,4 +1,5 @@
 import React from 'react';
+import { Platform } from 'react-native';
 import { fireEvent, render, waitFor } from '@testing-library/react-native';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import FoodSettingsScreen from '../../src/screens/FoodSettingsScreen';
@@ -27,7 +28,13 @@ jest.mock('react-native-safe-area-context', () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
 }));
 
-const navigation = { goBack: jest.fn() } as any;
+const mockNavigation = { goBack: jest.fn(), setOptions: jest.fn() } as any;
+jest.mock('@react-navigation/native', () => ({
+  ...jest.requireActual('@react-navigation/native'),
+  useNavigation: () => mockNavigation,
+}));
+
+const navigation = mockNavigation;
 const route = { params: {} } as any;
 
 function renderScreen(initialPrefs: any) {
@@ -51,8 +58,14 @@ describe('FoodSettingsScreen', () => {
   });
 
   it('renders the renamed "Food Settings" header', () => {
-    const { getByText } = renderScreen({});
-    expect(getByText('Food Settings')).toBeTruthy();
+    const { getByText, queryByText } = renderScreen({});
+    if (Platform.OS === 'ios') {
+      // On iOS the title is provided by the native stack header (configured in
+      // App.tsx via createStackScreenOptions), so the inline title is hidden.
+      expect(queryByText('Food Settings')).toBeNull();
+    } else {
+      expect(getByText('Food Settings')).toBeTruthy();
+    }
   });
 
   it('renders the Show Net Carbs toggle row with description', () => {

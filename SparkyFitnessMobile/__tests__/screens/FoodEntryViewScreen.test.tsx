@@ -1,5 +1,6 @@
 import React from 'react';
-import { fireEvent, render, waitFor } from '@testing-library/react-native';
+import { render, waitFor } from '@testing-library/react-native';
+import { pressAction } from './helpers/nativeHeaderTestUtils';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import FoodEntryViewScreen from '../../src/screens/FoodEntryViewScreen';
 import { useMealTypes } from '../../src/hooks';
@@ -11,9 +12,24 @@ import { useDeleteFoodEntry } from '../../src/hooks/useDeleteFoodEntry';
 import { useUpdateFoodEntry } from '../../src/hooks/useUpdateFoodEntry';
 import { useProfile } from '../../src/hooks/useProfile';
 
+const mockNavigation = {
+  setOptions: jest.fn(),
+  goBack: jest.fn(),
+  navigate: jest.fn(),
+  setParams: jest.fn(),
+  replace: jest.fn(),
+} as any;
+
+jest.mock('@react-navigation/native', () => ({
+  ...jest.requireActual('@react-navigation/native'),
+  useNavigation: () => mockNavigation,
+}));
+
 jest.mock('../../src/hooks', () => ({
   useMealTypes: jest.fn(),
   usePreferences: jest.fn(() => ({ preferences: undefined, isLoading: false, isError: false, refetch: jest.fn() })),
+  useServerConnection: jest.fn(() => ({ isConnected: true, isLoading: false })),
+  useCustomNutrients: jest.fn(() => ({ customNutrients: [], isLoading: false, isError: false, refetch: jest.fn() })),
 }));
 
 jest.mock('../../src/hooks/useFoodVariants', () => ({
@@ -36,6 +52,14 @@ jest.mock('../../src/hooks/useProfile', () => ({
 jest.mock('../../src/components/ActiveWorkoutBar', () => ({
   useActiveWorkoutBarPadding: jest.fn(() => 0),
 }));
+
+jest.mock('../../src/components/MacroCompositionRing', () => {
+  const { View } = require('react-native');
+  return {
+    __esModule: true,
+    default: () => <View testID="macro-composition-ring" />,
+  };
+});
 
 jest.mock('uniwind', () => ({
   useCSSVariable: (keys: string | string[]) =>
@@ -145,12 +169,7 @@ const insets = { top: 0, bottom: 0, left: 0, right: 0 };
 const frame = { x: 0, y: 0, width: 390, height: 844 };
 
 describe('FoodEntryViewScreen', () => {
-  const navigation = {
-    goBack: jest.fn(),
-    navigate: jest.fn(),
-    setParams: jest.fn(),
-    replace: jest.fn(),
-  } as any;
+  const navigation = mockNavigation;
 
   const mockCreateVariant = jest.fn();
   const mockUpdateEntry = jest.fn();
@@ -247,6 +266,77 @@ describe('FoodEntryViewScreen', () => {
     expect(navigation.replace).not.toHaveBeenCalled();
   });
 
+  it('renders verified badge for verified diary entries', () => {
+    const screen = renderScreen({
+      entry: { ...baseEntry, provider_verified: true },
+    });
+
+    expect(screen.getByText('Greek Yogurt')).toBeTruthy();
+    expect(screen.getByTestId('verified-badge')).toBeTruthy();
+  });
+
+  it('offers the 100 g reference when editing a grouped local entry', () => {
+    mockUseFoodVariants.mockReturnValue({
+      variants: [
+        {
+          id: 'variant-portion',
+          food_id: 'food-1',
+          is_default: true,
+          serving_size: 1,
+          serving_unit: 'portion',
+          serving_description: 'portion (150 g)',
+          calories: 183,
+          protein: 4,
+          carbs: 40,
+          fat: 0,
+        },
+        {
+          id: 'variant-reference',
+          food_id: 'food-1',
+          serving_size: 100,
+          serving_unit: 'g',
+          serving_description: '100 g',
+          calories: 122,
+          protein: 2.7,
+          carbs: 27,
+          fat: 0,
+        },
+        {
+          id: 'variant-portion-grams',
+          food_id: 'food-1',
+          serving_size: 150,
+          serving_unit: 'g',
+          serving_description: '150 g',
+          calories: 183,
+          protein: 4,
+          carbs: 40,
+          fat: 0,
+        },
+      ] as any,
+      isLoading: false,
+      isError: false,
+    });
+
+    const screen = renderScreen({
+      entry: {
+        ...baseEntry,
+        variant_id: 'variant-reference',
+        quantity: 100,
+        unit: 'g',
+        serving_size: 100,
+        calories: 122,
+        protein: 2.7,
+        carbs: 27,
+      },
+    });
+
+    pressAction(screen, navigation, 'Edit');
+
+    expect(screen.getByText('1 portion (150 g) (183 cal)')).toBeTruthy();
+    expect(screen.getByText('100 g (122 cal)')).toBeTruthy();
+    expect(screen.queryByText('150 g (183 cal)')).toBeNull();
+  });
+
   it('applies the unit returned from adjust nutrition and saves against that variant', async () => {
     const screen = renderScreen({
       adjustedValues: {
@@ -294,8 +384,8 @@ describe('FoodEntryViewScreen', () => {
 
     expect(screen.getByText('1 serving · 1 cup per serving')).toBeTruthy();
 
-    fireEvent.press(screen.getByText('Edit'));
-    fireEvent.press(screen.getByText('Done'));
+    pressAction(screen, navigation, 'Edit');
+    pressAction(screen, navigation, 'Done');
 
     expect(mockUpdateEntry).toHaveBeenCalledWith(
       expect.objectContaining({

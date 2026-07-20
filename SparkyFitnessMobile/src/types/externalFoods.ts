@@ -35,6 +35,10 @@ export interface ExternalFoodItem {
   id: string;
   name: string;
   brand: string | null;
+  barcode?: string | null;
+  provider_type?: string;
+  provider_external_id?: string;
+  is_custom?: boolean;
   calories: number;
   protein: number;
   carbs: number;
@@ -52,6 +56,9 @@ export interface ExternalFoodItem {
   vitamin_c?: number;
   serving_size: number;
   serving_unit: string;
+  serving_description?: string;
   source: string;
   variants?: ExternalFoodVariant[];
+  /** Whether the food is verified by the provider (e.g. Yazio verified foods) */
+  provider_verified?: boolean;
 }

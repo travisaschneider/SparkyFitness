@@ -11,25 +11,34 @@ import { SymbolView, SymbolViewProps } from 'expo-symbols';
 const ICON_MAP = {
   // Navigation
   'chevron-down': { sf: 'chevron.down', ion: 'chevron-down' },
+  'chevron-up': { sf: 'chevron.up', ion: 'chevron-up' },
   'chevron-forward': { sf: 'chevron.right', ion: 'chevron-forward' },
   'chevron-back': { sf: 'chevron.left', ion: 'chevron-back' },
+  'chevron-expand': { sf: 'chevron.up.chevron.down', ion: 'chevron-expand' },
 
   // Actions
   'copy': { sf: 'doc.on.doc', ion: 'copy-outline' },
+  'trash': { sf: 'trash', ion: 'trash-outline' },
   'paste': { sf: 'doc.on.clipboard', ion: 'clipboard-outline' },
+  'eye': { sf: 'eye', ion: 'eye-outline' },
+  'eye-off': { sf: 'eye.slash', ion: 'eye-off-outline' },
   'add-circle': { sf: 'plus.circle', ion: 'add-circle-outline' },
   'remove-circle': { sf: 'minus.circle', ion: 'remove-circle-outline' },
   'checkmark': { sf: 'checkmark', ion: 'checkmark' },
   'settings': { sf: 'gearshape.fill', ion: 'settings' },
   'add': { sf: 'plus', ion: 'add' },
   'remove': { sf: 'minus', ion: 'remove' },
+  'arrow-up': { sf: 'arrow.up', ion: 'arrow-up' },
   'close': { sf: 'xmark', ion: 'close' },
+  'ellipsis-horizontal': { sf: 'ellipsis', ion: 'ellipsis-horizontal' },
   'search': { sf: 'magnifyingglass', ion: 'search-outline' },
   'save': { sf: 'square.and.arrow.down', ion: 'save-outline' },
   'share': { sf: 'square.and.arrow.up', ion: 'share-outline' },
   'bookmark': { sf: 'bookmark', ion: 'bookmark-outline' },
   'bookmark-filled': { sf: 'bookmark.fill', ion: 'bookmark' },
+  'link': { sf: 'link', ion: 'link-outline' },
   'checkmark-circle': { sf: 'checkmark.circle', ion: 'checkmark-circle-outline' },
+  'checkmark-circle-filled': { sf: 'checkmark.circle.fill', ion: 'checkmark-circle' },
   'radio-button-on': { sf: 'circle.inset.filled', ion: 'radio-button-on' },
   'radio-button-off': { sf: 'circle', ion: 'radio-button-off' },
   'camera-reverse': { sf: 'camera.rotate', ion: 'camera-reverse-outline' },
@@ -38,9 +47,15 @@ const ICON_MAP = {
   'pencil': { sf: 'pencil', ion: 'create-outline' },
   'pause': { sf: 'pause.fill', ion: 'pause' },
   'play': { sf: 'play.fill', ion: 'play' },
+  'stop': { sf: 'stop.fill', ion: 'stop' },
   'forward': { sf: 'forward.fill', ion: 'play-skip-forward' },
+  'skip-forward': { sf: 'forward.end.fill', ion: 'play-skip-forward' },
   'measurements': { sf: 'ruler', ion: 'analytics-outline' },
   'scale': { sf: 'scalemass', ion: 'scale-outline' },
+  // Android uses -outline variants for stroke-weight consistency with the set.
+  'reorder-handle': { sf: 'line.3.horizontal', ion: 'reorder-three-outline' },
+  'swap-vertical': { sf: 'arrow.up.arrow.down', ion: 'swap-vertical-outline' },
+  'arrow-undo': { sf: 'arrow.uturn.backward', ion: 'arrow-undo-outline' },
 
   // Status
   'shield-checkmark': { sf: 'checkmark.shield', ion: 'shield-checkmark-outline' },
@@ -65,6 +80,7 @@ const ICON_MAP = {
 
   // Exercise
   'timer': { sf: 'timer', ion: 'timer-outline' },
+  'trophy': { sf: 'trophy.fill', ion: 'trophy' },
   'exercise': { sf: 'flame.fill', ion: 'flame' },
   'exercise-running': { sf: 'figure.run', ion: 'walk-outline' },
   'exercise-running-filled': { sf: 'figure.run', ion: 'walk' },
@@ -104,13 +120,19 @@ const ICON_MAP = {
   'health-data-sync': { sf: 'heart', ion: 'heart-outline' },
   'calorie-settings': { sf: 'flame', ion: 'flame-outline' },
   'food-search-settings': { sf: 'magnifyingglass', ion: 'search-outline' },
+  'dashboard-settings': { sf: 'square.grid.2x2', ion: 'grid-outline' },
+  'diary-settings': { sf: 'book', ion: 'book-outline' },
   'app-settings': { sf: 'slider.horizontal.3', ion: 'options-outline' },
   'logs': { sf: 'doc.plaintext', ion: 'document-text-outline' },
   'about': { sf: 'info.circle', ion: 'information-circle-outline' },
-  'sparkle': { sf: 'sparkles', ion: 'sparkles-outline' },
+  'whats-new': { sf: 'gift', ion: 'gift-outline' },
 
   // AI features
   'sparkles': { sf: 'sparkles', ion: 'sparkles' },
+
+  // Biometrics/Security
+  'fingerprint': { sf: 'touchid', ion: 'finger-print-outline' },
+  'lock-closed': { sf: 'lock.fill', ion: 'lock-closed-outline' },
 } as const;
 
 export type IconName = keyof typeof ICON_MAP;

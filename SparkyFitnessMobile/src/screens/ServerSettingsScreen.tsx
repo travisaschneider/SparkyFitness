@@ -19,6 +19,7 @@ import * as WebBrowser from 'expo-web-browser';
 import Button from '../components/ui/Button';
 import Icon from '../components/Icon';
 import ServerConfigModal from '../components/ServerConfigModal';
+import SettingsRow from '../components/SettingsRow';
 import { useActiveWorkoutBarPadding } from '../components/ActiveWorkoutBar';
 import {
   deleteServerConfig,
@@ -28,6 +29,8 @@ import {
 } from '../services/storage';
 import { addLog } from '../services/LogService';
 import { notifyNoConfigs } from '../services/api/authService';
+import { useNativeIOSHeadersActive } from '../services/nativeTabBarPreference';
+import { useScreenHeader } from '../hooks/useScreenHeader';
 import { useServerConfigs, useServerConnection } from '../hooks';
 import { serverConfigsQueryKey, serverConnectionQueryKey } from '../hooks/queryKeys';
 import type { RootStackScreenProps } from '../types/navigation';
@@ -37,6 +40,7 @@ type ServerSettingsScreenProps = RootStackScreenProps<'ServerSettings'>;
 const ServerSettingsScreen: React.FC<ServerSettingsScreenProps> = ({ navigation }) => {
   const insets = useSafeAreaInsets();
   const activeWorkoutBarPadding = useActiveWorkoutBarPadding('stack');
+  const usesNativeHeader = useNativeIOSHeadersActive();
   const [accentPrimary, textSecondary, textLink, success, danger] = useCSSVariable([
     '--color-accent-primary',
     '--color-text-secondary',
@@ -203,27 +207,18 @@ const ServerSettingsScreen: React.FC<ServerSettingsScreenProps> = ({ navigation 
     );
   };
 
+  const header = useScreenHeader({ title: 'Server Settings', left: { kind: 'back' } });
+
   return (
-    <View className="flex-1 bg-background" style={{ paddingTop: insets.top }}>
+    <View className="flex-1 bg-background" style={usesNativeHeader ? undefined : { paddingTop: insets.top }}>
+      {header}
       <ScrollView
         contentContainerStyle={{
           padding: 16,
           paddingBottom: insets.bottom + 80 + activeWorkoutBarPadding,
         }}
-        contentInsetAdjustmentBehavior="never"
+        contentInsetAdjustmentBehavior={usesNativeHeader ? 'automatic' : 'never'}
       >
-        <View className="flex-row items-center mb-4">
-          <Button
-            variant="ghost"
-            onPress={() => navigation.goBack()}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-            className="py-0 px-0 mr-2"
-          >
-            <Icon name="chevron-back" size={22} color={accentPrimary} />
-          </Button>
-          <Text className="text-2xl font-bold text-text-primary">Server Settings</Text>
-        </View>
-
         {activeConfig && (
           <>
             <Text className="text-text-secondary text-xs font-semibold uppercase px-2 mb-2">
@@ -274,6 +269,15 @@ const ServerSettingsScreen: React.FC<ServerSettingsScreenProps> = ({ navigation 
             </View>
           </View>
           </>
+        )}
+
+        {isConnected && activeConfig?.authType === 'session' && (
+          <SettingsRow
+            icon="fingerprint"
+            title="Passkeys"
+            onPress={() => navigation.navigate('PasskeySettings')}
+            iconColor={accentPrimary}
+          />
         )}
 
         {otherConfigs.length > 0 && (

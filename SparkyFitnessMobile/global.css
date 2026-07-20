@@ -57,6 +57,10 @@
       --color-cat-pink:          hsl(340, 75%, 55%);
       --color-cat-violet:        hsl(265, 70%, 60%);
       --color-cat-orange:        hsl(22, 92%, 65%);
+      --color-cat-green:         hsl(124, 54%, 38%);
+      --color-cat-blue:          hsl(217, 80%, 52%);
+      --color-cat-teal:          hsl(182, 64%, 33%);
+      --color-cat-amber:         hsl(40, 88%, 43%);
 
       --color-progress-track:    hsl(218, 29%, 92%);
       --color-progress-overfill: hsl(215, 28%, 17%);
@@ -75,6 +79,10 @@
       --color-text-danger:       hsl(358, 98%, 97%);
       --color-text-danger-subtle: hsl(358, 72%, 38%);
       --color-icon-danger:       hsl(358, 80%, 50%);
+
+      --color-pr:                hsl(40, 88%, 43%);
+      --color-bg-pr:             hsl(48, 96%, 89%);
+      --color-text-pr:           hsl(28, 80%, 28%);
     }
       
     @variant dark {
@@ -117,24 +125,33 @@
       --color-cat-pink:          hsl(340, 50%, 60%);
       --color-cat-violet:        hsl(265, 50%, 60%);
       --color-cat-orange:        hsl(22, 55%, 60%);
+      --color-cat-green:         hsl(125, 24%, 53%);
+      --color-cat-blue:          hsl(217, 55%, 62%);
+      --color-cat-teal:          hsl(182, 35%, 52%);
+      --color-cat-amber:         hsl(40, 60%, 58%);
 
       --color-progress-track:    hsl(218, 41%, 23%);
       --color-progress-overfill: hsl(357, 66%, 65%);
 
-      --color-bg-success:        hsl(159, 40%, 14%);
+      --color-bg-success:        hsl(159, 35%, 19%);
       --color-bg-info:           hsl(220, 42%, 18%);
       --color-bg-warning:        hsl(36, 42%, 24%);
       --color-bg-danger:         hsl(358, 46%, 39%);
       --color-bg-danger-subtle:  hsl(358, 48%, 18%);
 
       --color-text-success:      hsl(160, 81%, 88%);
-      --color-icon-success:      hsl(145, 79%, 57%);
+      --color-icon-success:      hsl(146, 58%, 52%);
+      
       --color-text-info:         hsl(214, 100%, 91%);
       --color-text-warning:      hsl(43, 86%, 86%);
       --color-icon-warning:      hsl(38, 90%, 60%);
       --color-text-danger:       hsl(357, 68%, 94%);
       --color-text-danger-subtle: hsl(357, 88%, 88%);
       --color-icon-danger:       hsl(358, 80%, 65%);
+
+      --color-pr:                hsl(40, 60%, 58%);
+      --color-bg-pr:             hsl(36, 42%, 24%);
+      --color-text-pr:           hsl(43, 86%, 86%);
     }
 
     @variant amoled {
@@ -177,6 +194,10 @@
       --color-cat-pink:          hsl(340, 50%, 60%);
       --color-cat-violet:        hsl(265, 50%, 60%);
       --color-cat-orange:        hsl(22, 55%, 60%);
+      --color-cat-green:         hsl(125, 24%, 53%);
+      --color-cat-blue:          hsl(217, 55%, 62%);
+      --color-cat-teal:          hsl(182, 35%, 52%);
+      --color-cat-amber:         hsl(40, 60%, 58%);
 
       --color-progress-track:    hsl(218, 41%, 15%);
       --color-progress-overfill: hsl(357, 66%, 65%);
@@ -188,13 +209,17 @@
       --color-bg-danger-subtle:  hsl(358, 48%, 18%);
 
       --color-text-success:      hsl(160, 81%, 88%);
-      --color-icon-success:      hsl(145, 79%, 57%);
+      --color-icon-success:      hsl(146, 58%, 52%);
       --color-text-info:         hsl(214, 100%, 91%);
       --color-text-warning:      hsl(43, 86%, 86%);
       --color-icon-warning:      hsl(38, 90%, 60%);
       --color-text-danger:       hsl(357, 68%, 94%);
       --color-text-danger-subtle: hsl(357, 88%, 88%);
       --color-icon-danger:       hsl(358, 80%, 65%);
+
+      --color-pr:                hsl(40, 60%, 58%);
+      --color-bg-pr:             hsl(36, 42%, 24%);
+      --color-text-pr:           hsl(43, 86%, 86%);
     }
   }
 }

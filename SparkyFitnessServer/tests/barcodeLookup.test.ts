@@ -13,6 +13,25 @@ import preferenceService from '../services/preferenceService.js';
 import { searchFatSecretByBarcode } from '../integrations/fatsecret/fatsecretService.js';
 import { lookupBarcode } from '../services/foodCoreService.js';
 import { normalizeBarcode } from '../utils/foodUtils.js';
+
+// provider_nutrients / provider_nutrient_units are the provider's full field
+// dump + units surfaced for the alias viewer (covered by
+// customNutrientMatching.test.ts). Drop them here so these exact-shape mapping
+// assertions stay focused on the standard fields.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function stripProviderNutrients<T>(food: any): T {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const strip = (v: any) => {
+    if (!v) return;
+    delete v.provider_nutrients;
+    delete v.provider_nutrient_units;
+  };
+  strip(food?.default_variant);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if (Array.isArray(food?.variants)) food.variants.forEach(strip);
+  return food;
+}
+
 vi.mock('../models/foodRepository.js');
 vi.mock('../services/externalProviderService.js');
 vi.mock('../services/preferenceService.js');
@@ -198,7 +217,7 @@ const makeOffResponse = (overrides = {}) => ({
 describe('mapOpenFoodFactsProduct', () => {
   it('should map a full OFF product to the local food schema', () => {
     const offProduct = makeOffResponse().product;
-    const result = mapOpenFoodFactsProduct(offProduct);
+    const result = stripProviderNutrients(mapOpenFoodFactsProduct(offProduct));
     // serving_quantity=37, scale=0.37, all per-100g values scaled to per-serving
     expect(result).toEqual({
       name: 'Nutella',
@@ -370,7 +389,7 @@ describe('mapOpenFoodFactsProduct', () => {
 describe('mapUsdaBarcodeProduct', () => {
   it('should map a full USDA branded food to the local food schema', () => {
     const usdaFood = makeUsdaFood();
-    const result = mapUsdaBarcodeProduct(usdaFood);
+    const result = stripProviderNutrients(mapUsdaBarcodeProduct(usdaFood));
     // servingSize=37, scale=0.37, all per-100g values scaled to per-serving
     expect(result).toEqual({
       name: 'CHOCOLATE HAZELNUT SPREAD',
@@ -401,6 +420,177 @@ describe('mapUsdaBarcodeProduct', () => {
         vitamin_c: 0,
         is_default: true,
       },
+      variants: [
+        {
+          serving_size: 37,
+          serving_unit: 'g',
+          calories: 199,
+          protein: 2.3,
+          carbs: 21.3,
+          fat: 11.4,
+          saturated_fat: 3.9,
+          trans_fat: 0,
+          cholesterol: 2,
+          sodium: 15,
+          potassium: 74,
+          dietary_fiber: 1.3,
+          sugars: 20.8,
+          calcium: 44,
+          iron: 0.9,
+          polyunsaturated_fat: 0,
+          monounsaturated_fat: 0,
+          vitamin_a: 0,
+          vitamin_c: 0,
+          is_default: true,
+        },
+        {
+          serving_size: 100,
+          serving_unit: 'g',
+          calories: 539,
+          protein: 6.3,
+          carbs: 57.5,
+          fat: 30.9,
+          saturated_fat: 10.6,
+          trans_fat: 0,
+          cholesterol: 5,
+          sodium: 41,
+          potassium: 200,
+          dietary_fiber: 3.4,
+          sugars: 56.3,
+          calcium: 120,
+          iron: 2.3,
+          polyunsaturated_fat: 0,
+          monounsaturated_fat: 0,
+          vitamin_a: 0,
+          vitamin_c: 0,
+          is_default: false,
+        },
+      ],
+    });
+  });
+
+  it('should map multiple variants from householdServingFullText', () => {
+    const usdaFood = makeUsdaFood({
+      servingSize: 30,
+      servingSizeUnit: 'g',
+      householdServingFullText: '2 tbsp',
+      foodNutrients: [{ nutrientId: 1008, value: 500 }],
+    });
+    const result = mapUsdaBarcodeProduct(usdaFood);
+
+    expect(result.variants).toHaveLength(3);
+
+    expect(result.variants[0]).toMatchObject({
+      serving_size: 30,
+      serving_unit: 'g',
+      calories: 150,
+      is_default: true,
+    });
+
+    expect(result.variants[1]).toMatchObject({
+      serving_size: 100,
+      serving_unit: 'g',
+      calories: 500,
+      is_default: false,
+    });
+
+    expect(result.variants[2]).toMatchObject({
+      serving_size: 2,
+      serving_unit: 'tbsp',
+      calories: 150,
+      is_default: false,
+    });
+  });
+
+  it('should map multiple variants from foodPortions', () => {
+    const usdaFood = makeUsdaFood({
+      servingSize: 0,
+      servingSizeUnit: undefined,
+      foodNutrients: [{ nutrientId: 1008, value: 900 }],
+      foodPortions: [
+        {
+          amount: 1,
+          measureUnit: { name: 'undetermined' },
+          modifier: '10205',
+          portionDescription: '1 cup',
+          gramWeight: 218,
+        },
+        {
+          amount: 1,
+          measureUnit: { name: 'quantity not specified' },
+          modifier: 'tbsp',
+          portionDescription: '1 tbsp',
+          gramWeight: 14,
+        },
+      ],
+    });
+    const result = mapUsdaBarcodeProduct(usdaFood);
+
+    expect(result.variants).toHaveLength(3);
+
+    expect(result.variants[0]).toMatchObject({
+      serving_size: 100,
+      serving_unit: 'g',
+      calories: 900,
+      is_default: true,
+    });
+
+    expect(result.variants[1]).toMatchObject({
+      serving_size: 1,
+      serving_unit: 'cup',
+      calories: 1962,
+      is_default: false,
+    });
+
+    expect(result.variants[2]).toMatchObject({
+      serving_size: 1,
+      serving_unit: 'tbsp',
+      calories: 126,
+      is_default: false,
+    });
+  });
+  it('should correctly parse mixed portion descriptions (e.g. "30g or 1 piece") and map to the count and unit instead of the gram count as amount', () => {
+    const usdaFood = makeUsdaFood({
+      servingSize: 30,
+      servingSizeUnit: 'g',
+      foodNutrients: [{ nutrientId: 1008, value: 500 }],
+      foodPortions: [
+        {
+          amount: 30,
+          measureUnit: { name: 'piece' },
+          portionDescription: '30g or 1 piece',
+          gramWeight: 30,
+        },
+      ],
+    });
+    const result = mapUsdaBarcodeProduct(usdaFood);
+
+    expect(result.variants).toHaveLength(3);
+
+    expect(result.variants[2]).toMatchObject({
+      serving_size: 1,
+      serving_unit: 'piece',
+      calories: 150,
+      is_default: false,
+    });
+  });
+
+  it('should correctly parse mixed householdServingFullText descriptions (e.g. "30 g or 1 piece")', () => {
+    const usdaFood = makeUsdaFood({
+      servingSize: 30,
+      servingSizeUnit: 'g',
+      householdServingFullText: '30 g or 1 piece',
+      foodNutrients: [{ nutrientId: 1008, value: 500 }],
+    });
+    const result = mapUsdaBarcodeProduct(usdaFood);
+
+    expect(result.variants).toHaveLength(3);
+
+    expect(result.variants[2]).toMatchObject({
+      serving_size: 1,
+      serving_unit: 'piece',
+      calories: 150,
+      is_default: false,
     });
   });
   it('should default missing nutrients to 0', () => {
@@ -768,6 +958,37 @@ describe('lookupBarcode', () => {
     expect(
       externalProviderService.getExternalDataProviderDetails
     ).toHaveBeenCalledWith(TEST_USER_ID, TEST_PROVIDER_ID);
+  });
+  it('resolves provider credentials against the authenticated actor, not the switched data-context user', async () => {
+    // A delegate (ACTOR) switched into a family member's context (CONTEXT).
+    const CONTEXT_USER = 'victim-context-1';
+    const ACTOR_USER = 'delegate-actor-2';
+    // @ts-expect-error TS(2339): mockResolvedValue not on mock type
+    foodRepository.findFoodByBarcode.mockResolvedValue(null);
+    // @ts-expect-error TS(2339): mockResolvedValue not on mock type
+    externalProviderService.getExternalDataProviderDetails.mockResolvedValue(
+      makeUsdaProvider()
+    );
+    // @ts-expect-error TS(2339): mockResolvedValue not on mock type
+    searchUsdaFoodsByBarcode.mockResolvedValue({ foods: [makeUsdaFood()] });
+
+    const result = await lookupBarcode(
+      '3017620422003',
+      CONTEXT_USER,
+      TEST_PROVIDER_ID,
+      ACTOR_USER
+    );
+
+    expect(result.source).toBe('usda');
+    // Provider secrets are decrypted for the actor — never the switched victim.
+    expect(
+      externalProviderService.getExternalDataProviderDetails
+    ).toHaveBeenCalledWith(ACTOR_USER, TEST_PROVIDER_ID);
+    // The local food library is still searched in the switched data context.
+    expect(foodRepository.findFoodByBarcode).toHaveBeenCalledWith(
+      '3017620422003',
+      CONTEXT_USER
+    );
   });
   it('should skip USDA when provider is inactive', async () => {
     // @ts-expect-error TS(2339): Property 'mockResolvedValue' does not exist on typ... Remove this comment to see the full error message

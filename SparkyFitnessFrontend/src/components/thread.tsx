@@ -5,6 +5,8 @@ import {
 } from '@/components/attachment';
 import { MarkdownText } from '@/components/markdown-text';
 import { Reasoning } from '@/components/reasoning';
+import { ASK_USER_TOOL_NAME } from '@workspace/shared';
+import { AskUserToolUI } from '@/components/ai/AskUserToolUI';
 import { ToolFallback } from '@/components/tool-fallback';
 import { TooltipIconButton } from '@/components/tooltip-icon-button';
 import { Button } from '@/components/ui/button';
@@ -18,11 +20,13 @@ import {
   ComposerPrimitive,
   ErrorPrimitive,
   MessagePrimitive,
-  SuggestionPrimitive,
   ThreadPrimitive,
   useAuiState,
 } from '@assistant-ui/react';
 import type { AssistantRuntime } from '@assistant-ui/react';
+import { getThreadMessageTokenUsage } from '@assistant-ui/react-ai-sdk';
+import { useChatbotVisibility } from '@/contexts/ChatbotVisibilityContext';
+import { ChatToolCategoriesSelector } from '@/components/ai/ChatToolCategoriesSelector';
 import {
   ArrowDownIcon,
   ArrowUpIcon,
@@ -85,6 +89,7 @@ const ThreadInner: FC = () => {
 
           <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer bg-background sticky bottom-0 mt-auto flex flex-col gap-4 overflow-visible pb-4 md:pb-6">
             <ThreadScrollToBottom />
+            <SessionTokenUsage />
             <Composer />
           </ThreadPrimitive.ViewportFooter>
         </div>
@@ -134,28 +139,35 @@ const ThreadWelcome: FC = () => {
   );
 };
 
+const WELCOME_SUGGESTIONS = [
+  'Log two eggs and a banana for breakfast',
+  'Log a 30 minute run today',
+  'How many calories do I have left today?',
+  'Suggest a high-protein snack',
+];
+
 const ThreadSuggestions: FC = () => {
   return (
     <div className="aui-thread-welcome-suggestions grid w-full gap-2 pb-4 @md:grid-cols-2">
-      <ThreadPrimitive.Suggestions>
-        {() => <ThreadSuggestionItem />}
-      </ThreadPrimitive.Suggestions>
+      {WELCOME_SUGGESTIONS.map((prompt) => (
+        <ThreadSuggestionItem key={prompt} prompt={prompt} />
+      ))}
     </div>
   );
 };
 
-const ThreadSuggestionItem: FC = () => {
+const ThreadSuggestionItem: FC<{ prompt: string }> = ({ prompt }) => {
   return (
-    <div className="aui-thread-welcome-suggestion-display fade-in slide-in-from-bottom-2 animate-in fill-mode-both duration-200 nth-[n+3]:hidden @md:nth-[n+3]:block">
-      <SuggestionPrimitive.Trigger send asChild>
+    <div className="aui-thread-welcome-suggestion-display fade-in slide-in-from-bottom-2 animate-in fill-mode-both duration-200">
+      {/* <div className="aui-thread-welcome-suggestion-display fade-in slide-in-from-bottom-2 animate-in fill-mode-both duration-200 nth-[n+3]:hidden @md:nth-[n+3]:block"> */}
+      <ThreadPrimitive.Suggestion prompt={prompt} clearComposer asChild>
         <Button
           variant="ghost"
-          className="aui-thread-welcome-suggestion bg-background hover:bg-muted h-auto w-full flex-wrap items-start justify-start gap-1 rounded-3xl border px-4 py-3 text-start text-sm transition-colors @md:flex-col"
+          className="aui-thread-welcome-suggestion bg-background hover:bg-muted h-auto w-full flex-wrap items-start justify-start gap-1 rounded-3xl border px-4 py-3 text-start text-sm font-medium transition-colors @md:flex-col"
         >
-          <SuggestionPrimitive.Title className="aui-thread-welcome-suggestion-text-1 font-medium" />
-          <SuggestionPrimitive.Description className="aui-thread-welcome-suggestion-text-2 text-muted-foreground empty:hidden" />
+          {prompt}
         </Button>
-      </SuggestionPrimitive.Trigger>
+      </ThreadPrimitive.Suggestion>
     </div>
   );
 };
@@ -186,7 +198,10 @@ const Composer: FC = () => {
 const ComposerAction: FC = () => {
   return (
     <div className="aui-composer-action-wrapper relative flex items-center justify-between">
-      <ComposerAddAttachment />
+      <div className="flex items-center gap-1">
+        <ComposerAddAttachment />
+        <ChatToolCategoriesSelector />
+      </div>
       <AuiIf condition={(s) => !s.thread.isRunning}>
         <ComposerPrimitive.Send asChild>
           <TooltipIconButton
@@ -229,6 +244,87 @@ const MessageError: FC = () => {
   );
 };
 
+// Purely presentational muted/small token-usage line. With `label` set (the
+// session running total) it reads "label: N tokens"; otherwise it renders the
+// per-message breakdown, dropping the cached segment when 0/absent. Numbers are
+// localized so large counts read with thousands separators.
+export const TokenUsageLine: FC<{
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  cachedInputTokens?: number;
+  label?: string;
+  className?: string;
+}> = ({
+  inputTokens,
+  outputTokens,
+  totalTokens,
+  cachedInputTokens,
+  label,
+  className,
+}) => {
+  const text = label
+    ? `${label}: ${(totalTokens ?? 0).toLocaleString()} tokens`
+    : [
+        inputTokens !== undefined && `${inputTokens.toLocaleString()} in`,
+        outputTokens !== undefined && `${outputTokens.toLocaleString()} out`,
+        totalTokens !== undefined && `${totalTokens.toLocaleString()} total`,
+        cachedInputTokens
+          ? `${cachedInputTokens.toLocaleString()} cached`
+          : null,
+      ]
+        .filter(Boolean)
+        .join(' · ');
+
+  return (
+    <span
+      data-slot="aui_token-usage-line"
+      className={cn('text-muted-foreground text-xs', className)}
+    >
+      {text}
+    </span>
+  );
+};
+
+// Per-message footer: the usage for this assistant reply. Gated on the
+// pure-local toggle; renders nothing mid-stream or when the provider reported
+// no usage (getThreadMessageTokenUsage returns undefined).
+export const MessageTokenUsage: FC = () => {
+  const { showTokenStats } = useChatbotVisibility();
+  const message = useAuiState((s) => s.message);
+  if (!showTokenStats) return null;
+  const usage = getThreadMessageTokenUsage(message);
+  if (!usage) return null;
+  return (
+    <TokenUsageLine
+      className="ms-2"
+      inputTokens={usage.inputTokens}
+      outputTokens={usage.outputTokens}
+      totalTokens={usage.totalTokens}
+      cachedInputTokens={usage.cachedInputTokens}
+    />
+  );
+};
+
+// Session running total near the composer. The adapter helpers give
+// latest-or-single, not a sum, so add up every message's total. The `?? 0`
+// matters: history messages restored without metadata return undefined usage,
+// so a bare `.totalTokens` would throw. "this session" signals the count is
+// current-session-only — it resets on reload (see known limitations).
+export const SessionTokenUsage: FC = () => {
+  const { showTokenStats } = useChatbotVisibility();
+  const messages = useAuiState((s) => s.thread.messages);
+  if (!showTokenStats) return null;
+  const total = messages.reduce(
+    (sum, m) => sum + (getThreadMessageTokenUsage(m)?.totalTokens ?? 0),
+    0
+  );
+  if (total === 0) return null;
+  return (
+    <TokenUsageLine className="px-1" label="this session" totalTokens={total} />
+  );
+};
+
 const AssistantMessage: FC = () => {
   return (
     <MessagePrimitive.Root
@@ -245,6 +341,9 @@ const AssistantMessage: FC = () => {
             Text: MarkdownText,
             Reasoning: Reasoning,
             tools: {
+              by_name: {
+                [ASK_USER_TOOL_NAME]: AskUserToolUI,
+              },
               Fallback: ToolFallback,
             },
           }}
@@ -258,6 +357,7 @@ const AssistantMessage: FC = () => {
       >
         <BranchPicker />
         <AssistantActionBar />
+        <MessageTokenUsage />
       </div>
     </MessagePrimitive.Root>
   );

@@ -3,6 +3,8 @@ import foodEntryService from '../services/foodEntryService.js';
 import { authenticate } from '../middleware/authMiddleware.js';
 import { log } from '../config/logging.js';
 import { canAccessUserData } from '../utils/permissionUtils.js';
+import { clearUserTdeeCache } from '../services/AdaptiveTdeeService.js';
+import { isEntryTimeString } from '@workspace/shared';
 const router = express.Router();
 // Middleware to protect routes
 router.use(authenticate); // Use the authenticate middleware function
@@ -36,12 +38,23 @@ router.post('/', async (req, res, next) => {
       meal_type,
       meal_type_id,
       entry_date,
+      entry_time,
       name,
       description,
       foods,
       quantity,
       unit,
     } = req.body;
+
+    if (
+      entry_time !== null &&
+      entry_time !== undefined &&
+      !isEntryTimeString(entry_time)
+    ) {
+      return res.status(400).json({
+        error: 'entry_time must be in HH:MM (24h) format.',
+      });
+    }
 
     const userId = req.userId; // From authMiddleware
     // Determine target user
@@ -68,6 +81,7 @@ router.post('/', async (req, res, next) => {
         meal_type,
         meal_type_id,
         entry_date,
+        entry_time,
         name,
         description,
         foods,
@@ -77,6 +91,7 @@ router.post('/', async (req, res, next) => {
       } // mealData
     );
     log('info', `User ${userId} created FoodEntryMeal ${newFoodEntryMeal.id}`);
+    clearUserTdeeCache(targetUserId);
     res.status(201).json(newFoodEntryMeal);
   } catch (err) {
     // @ts-expect-error TS(2571): Object is of type 'unknown'.
@@ -232,11 +247,22 @@ router.put('/:id', async (req, res, next) => {
       meal_type,
       meal_type_id,
       entry_date,
+      entry_time,
       foods,
       quantity,
       unit,
       meal_template_id,
     } = req.body;
+
+    if (
+      entry_time !== null &&
+      entry_time !== undefined &&
+      !isEntryTimeString(entry_time)
+    ) {
+      return res.status(400).json({
+        error: 'entry_time must be in HH:MM (24h) format.',
+      });
+    }
     log('info', `[DEBUG] PUT /food-entry-meals/${id} Body:`, {
       quantity,
       unit,
@@ -284,6 +310,7 @@ router.put('/:id', async (req, res, next) => {
         meal_type,
         meal_type_id,
         entry_date,
+        entry_time,
         foods,
         quantity,
         unit,
@@ -291,6 +318,7 @@ router.put('/:id', async (req, res, next) => {
       } // updatedMealData
     );
     log('info', `User ${userId} updated FoodEntryMeal`);
+    clearUserTdeeCache(targetUserId);
     res.status(200).json(updatedFoodEntryMeal);
   } catch (err) {
     // @ts-expect-error TS(2571): Object is of type 'unknown'.
@@ -328,6 +356,7 @@ router.delete('/:id', async (req, res, next) => {
     const userId = req.userId; // From authMiddleware
     await foodEntryService.deleteFoodEntryMeal(userId, id);
     log('info', `User ${userId} deleted FoodEntryMeal ${id}`);
+    clearUserTdeeCache(userId);
     res.status(204).send(); // No content
   } catch (err) {
     // @ts-expect-error TS(2571): Object is of type 'unknown'.

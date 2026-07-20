@@ -11,6 +11,7 @@ export interface FamilyAccessPayload {
     can_view_exercise_library: boolean;
     can_manage_checkin: boolean; // Added can_manage_checkin
     can_view_reports: boolean; // Added can_view_reports
+    can_manage_medications: boolean; // Added can_manage_medications
     share_external_providers: boolean;
   };
   access_end_date: string | null;
@@ -22,14 +23,17 @@ export const loadFamilyAccess = async (): Promise<FamilyAccess[]> => {
     method: 'GET',
     suppress404Toast: true,
   });
+  console.log('Raw family access data', data);
   const transformedData: FamilyAccess[] = (data || []).map(
     (item: FamilyAccess) => ({
       id: item.id,
       owner_user_id: item.owner_user_id,
       owner_email: item.owner_email, // Map owner_email
+      owner_full_name: item.owner_full_name || null, // Map owner_full_name
       family_email: item.family_email,
       family_user_id: item.family_user_id,
       family_user_email: item.family_user_email, // Map family_user_email
+      family_full_name: item.family_full_name || null, // Map family_full_name
       access_permissions:
         typeof item.access_permissions === 'object'
           ? {
@@ -43,6 +47,8 @@ export const loadFamilyAccess = async (): Promise<FamilyAccess[]> => {
                 item.access_permissions.can_manage_checkin || false, // Map can_manage_checkin
               can_view_reports:
                 item.access_permissions.can_view_reports || false, // Map can_view_reports
+              can_manage_medications:
+                item.access_permissions.can_manage_medications || false, // Map can_manage_medications
               share_external_providers:
                 item.access_permissions.share_external_providers || false,
             }
@@ -52,6 +58,7 @@ export const loadFamilyAccess = async (): Promise<FamilyAccess[]> => {
               can_view_exercise_library: false,
               can_manage_checkin: false,
               can_view_reports: false,
+              can_manage_medications: false,
               share_external_providers: false,
             },
       access_end_date: item.access_end_date,

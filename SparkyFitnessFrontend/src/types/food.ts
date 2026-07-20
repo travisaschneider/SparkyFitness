@@ -13,8 +13,6 @@ export interface FoodVariant {
   serving_size: number;
   serving_unit: string;
   serving_description?: string;
-  serving_weight?: number;
-  serving_weight_unit?: string;
   calories: number;
   protein: number;
   carbs: number;
@@ -36,6 +34,14 @@ export interface FoodVariant {
   is_locked?: boolean;
   glycemic_index?: GlycemicIndex;
   custom_nutrients?: Record<string, string | number>;
+  // All nutrient fields the provider reported, keyed by the provider's EXACT
+  // label (e.g. "Magnesium, Mg"). Import-only (present on provider search/detail
+  // results, never persisted); used to let users discover and add aliases.
+  provider_nutrients?: Record<string, number>;
+  // Unit per provider field (same label keys as provider_nutrients), when the
+  // provider reports units (USDA, OFF). Import-only; used to prefill/display
+  // a custom nutrient's unit.
+  provider_nutrient_units?: Record<string, string>;
   source?: 'manual' | 'ai_estimate' | 'imported';
   ai_confidence?: 'high' | 'medium' | 'low' | null;
   allergens?: string[] | null;
@@ -49,7 +55,7 @@ export interface Food {
   is_custom: boolean;
   user_id?: string;
   shared_with_public?: boolean;
-  barcode?: string;
+  barcode?: string | null;
   provider_external_id?: string;
   provider_type?:
     | 'openfoodfacts'
@@ -102,6 +108,7 @@ export interface FoodEntry {
   food_name?: string; // Snapshotted food name
   brand_name?: string; // Snapshotted brand name
   entry_date: string;
+  entry_time?: string | null;
   meal_plan_template_id?: string;
   // Add water_ml to FoodEntry if it's a water entry
   water_ml?: number;
@@ -199,11 +206,12 @@ export type NumericFoodVariantKeys = Exclude<
   | 'id'
   | 'serving_unit'
   | 'serving_description'
-  | 'serving_weight_unit'
   | 'is_default'
   | 'is_locked'
   | 'glycemic_index'
   | 'custom_nutrients'
+  | 'provider_nutrients'
+  | 'provider_nutrient_units'
   // AI-Assisted Unit Conversions provenance — these are strings/enums, not
   // numerics, so the form-variant `string | ''` mapping must not include them.
   | 'user_id'

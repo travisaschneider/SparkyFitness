@@ -13,6 +13,7 @@ export interface FoodEntryCreateData {
   quantity: number;
   unit: string;
   entry_date: string;
+  entry_time?: string | null;
   variant_id?: string | null;
 }
 export const updateFoodEntry = async (
@@ -90,9 +91,15 @@ export const downloadDiaryExport = async (
   return response;
 };
 
-export const loadDiaryGoals = async (date: string): Promise<ExpandedGoals> => {
+export const loadDiaryGoals = async (
+  date: string,
+  adjust?: boolean
+): Promise<ExpandedGoals> => {
   // Adjust return type as needed
-  const response = await apiCall(`/goals/by-date/${date}`, {
+  const url = adjust
+    ? `/goals/by-date/${date}?adjust=true`
+    : `/goals/by-date/${date}`;
+  const response = await apiCall(url, {
     method: 'GET',
   });
   return response;
@@ -148,6 +155,7 @@ export interface FoodEntryMealCreateData {
   meal_template_id?: string | null;
   meal_type: string;
   entry_date: string;
+  entry_time?: string | null;
   name: string;
   description?: string;
   quantity: number;
@@ -160,6 +168,7 @@ export interface FoodEntryMealUpdateData {
   description?: string;
   meal_type?: string;
   entry_date?: string;
+  entry_time?: string | null;
   quantity?: number;
   unit?: string;
   foods: MealFood[]; // Foods must be provided for update
@@ -209,6 +218,42 @@ export const deleteFoodEntryMeal = async (
 ): Promise<unknown> => {
   const response = await apiCall(`/food-entry-meals/${foodEntryMealId}`, {
     method: 'DELETE',
+  });
+  return response;
+};
+
+export interface CopyFoodEntriesFromUserPayload {
+  familyUserId: string;
+  sourceDate: string;
+  sourceMealType: string;
+  targetDate: string;
+  targetMealType: string;
+}
+
+export interface CopyFoodEntriesToUserPayload {
+  familyUserId: string;
+  sourceDate: string;
+  sourceMealType: string;
+  targetDate: string;
+  targetMealType: string;
+}
+
+export const copyFoodEntriesFromUser = async (
+  payload: CopyFoodEntriesFromUserPayload
+): Promise<unknown> => {
+  const response = await apiCall('/food-entries/copy-from-user', {
+    method: 'POST',
+    body: payload,
+  });
+  return response;
+};
+
+export const copyFoodEntriesToUser = async (
+  payload: CopyFoodEntriesToUserPayload
+): Promise<unknown> => {
+  const response = await apiCall('/food-entries/copy-to-user', {
+    method: 'POST',
+    body: payload,
   });
   return response;
 };

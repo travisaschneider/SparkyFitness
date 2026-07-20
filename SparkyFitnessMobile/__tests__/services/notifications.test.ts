@@ -1,15 +1,31 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
 import * as Haptics from 'expo-haptics';
-import { Platform } from 'react-native';
+import { Alert, Platform } from 'react-native';
 import Toast from 'react-native-toast-message';
 import {
   __resetNotificationStateForTests,
+  cancelAllScheduledNotifications,
   cancelScheduledNotification,
+  dismissDeliveredNotification,
   ensureNotificationPermission,
   fireRestCompleteHaptic,
   initNotifications,
+  maybePromptForExactAlarmPermission,
+  scheduleFastGoalNotification,
   scheduleRestNotification,
+  setNotificationsEnabled,
 } from '../../src/services/notifications';
+import { ExactAlarmBridge } from '../../src/services/ExactAlarmBridge';
+import { useAppPreferencesStore } from '../../src/stores/appPreferencesStore';
+
+jest.mock('../../src/services/ExactAlarmBridge', () => ({
+  ExactAlarmBridge: {
+    isAvailable: true,
+    canScheduleExactAlarms: jest.fn(async () => false),
+    openExactAlarmSettings: jest.fn(async () => undefined),
+  },
+}));
 
 const mockGetPerms = Notifications.getPermissionsAsync as jest.MockedFunction<
   typeof Notifications.getPermissionsAsync
@@ -23,23 +39,40 @@ const mockSchedule = Notifications.scheduleNotificationAsync as jest.MockedFunct
 const mockCancel = Notifications.cancelScheduledNotificationAsync as jest.MockedFunction<
   typeof Notifications.cancelScheduledNotificationAsync
 >;
+const mockCancelAll = Notifications.cancelAllScheduledNotificationsAsync as jest.MockedFunction<
+  typeof Notifications.cancelAllScheduledNotificationsAsync
+>;
 const mockSetHandler = Notifications.setNotificationHandler as jest.MockedFunction<
   typeof Notifications.setNotificationHandler
 >;
 const mockSetChannel = Notifications.setNotificationChannelAsync as jest.MockedFunction<
   typeof Notifications.setNotificationChannelAsync
 >;
+const mockSetCategory = Notifications.setNotificationCategoryAsync as jest.MockedFunction<
+  typeof Notifications.setNotificationCategoryAsync
+>;
+const mockGetPresented = Notifications.getPresentedNotificationsAsync as jest.MockedFunction<
+  typeof Notifications.getPresentedNotificationsAsync
+>;
+const mockDismiss = Notifications.dismissNotificationAsync as jest.MockedFunction<
+  typeof Notifications.dismissNotificationAsync
+>;
 const mockToastShow = Toast.show as jest.MockedFunction<typeof Toast.show>;
 
 describe('notifications service', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await AsyncStorage.clear();
     __resetNotificationStateForTests();
     mockGetPerms.mockReset().mockResolvedValue({ status: 'granted' } as any);
     mockRequestPerms.mockReset().mockResolvedValue({ status: 'granted' } as any);
     mockSchedule.mockReset().mockResolvedValue('notif-id' as any);
     mockCancel.mockReset().mockResolvedValue(undefined as any);
+    mockCancelAll.mockReset().mockResolvedValue(undefined as any);
     mockSetHandler.mockClear();
     mockSetChannel.mockClear();
+    mockSetCategory.mockReset().mockResolvedValue(undefined as any);
+    mockGetPresented.mockReset().mockResolvedValue([]);
+    mockDismiss.mockReset().mockResolvedValue(undefined as any);
     mockToastShow.mockClear();
     Object.defineProperty(Platform, 'OS', { get: () => 'ios', configurable: true });
   });
@@ -60,6 +93,28 @@ describe('notifications service', () => {
           importance: Notifications.AndroidImportance.HIGH,
         }),
       );
+    });
+
+    it('creates a dedicated fasting Android channel', async () => {
+      Object.defineProperty(Platform, 'OS', { get: () => 'android', configurable: true });
+      await initNotifications();
+      expect(mockSetChannel).toHaveBeenCalledWith(
+        'fasting',
+        expect.objectContaining({
+          importance: Notifications.AndroidImportance.HIGH,
+        }),
+      );
+    });
+
+    it('registers the rest-complete category with a background Complete Set action', async () => {
+      await initNotifications();
+      expect(mockSetCategory).toHaveBeenCalledWith('rest-complete', [
+        expect.objectContaining({
+          identifier: 'complete-set',
+          buttonTitle: 'Complete Set',
+          options: expect.objectContaining({ opensAppToForeground: false }),
+        }),
+      ]);
     });
 
     it('does not create an Android channel on iOS', async () => {
@@ -109,13 +164,28 @@ describe('notifications service', () => {
       const id = await scheduleRestNotification('Bench Press', 60);
       expect(id).toBe('mock-id');
       expect(mockSchedule).toHaveBeenCalledWith({
-        content: expect.objectContaining({ title: 'Rest complete', body: 'Bench Press' }),
+        content: expect.objectContaining({
+          title: 'Rest complete',
+          body: 'Bench Press',
+          categoryIdentifier: 'rest-complete',
+        }),
         trigger: expect.objectContaining({
           type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
           seconds: 60,
           channelId: 'workout-timer',
         }),
       });
+    });
+
+    it('sweeps stale delivered rest pings, leaving other notifications alone', async () => {
+      mockGetPresented.mockResolvedValue([
+        { request: { identifier: 'old-rest', content: { categoryIdentifier: 'rest-complete' } } },
+        { request: { identifier: 'fasting-1', content: { categoryIdentifier: null } } },
+      ] as any);
+      await scheduleRestNotification('Bench Press', 60);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(mockDismiss).toHaveBeenCalledTimes(1);
+      expect(mockDismiss).toHaveBeenCalledWith('old-rest');
     });
 
     it('returns null when permission is denied', async () => {
@@ -128,6 +198,56 @@ describe('notifications service', () => {
       mockGetPerms.mockResolvedValue({ status: 'granted' } as any);
       mockSchedule.mockRejectedValue(new Error('boom'));
       expect(await scheduleRestNotification('Squat', 60)).toBeNull();
+    });
+  });
+
+  describe('scheduleFastGoalNotification', () => {
+    it('schedules a DATE-trigger notification on the fasting channel for a future target', async () => {
+      mockGetPerms.mockResolvedValue({ status: 'granted' } as any);
+      mockSchedule.mockResolvedValue('fast-goal-id' as any);
+      const target = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+
+      const id = await scheduleFastGoalNotification(target);
+
+      expect(id).toBe('fast-goal-id');
+      expect(mockSchedule).toHaveBeenCalledWith({
+        content: expect.objectContaining({ title: 'Fasting goal reached' }),
+        trigger: expect.objectContaining({
+          type: Notifications.SchedulableTriggerInputTypes.DATE,
+          channelId: 'fasting',
+        }),
+      });
+    });
+
+    it('returns null and schedules nothing for a past target', async () => {
+      const target = new Date(Date.now() - 60 * 1000).toISOString();
+      const id = await scheduleFastGoalNotification(target);
+      expect(id).toBeNull();
+      expect(mockSchedule).not.toHaveBeenCalled();
+    });
+
+    it('returns null when permission is denied', async () => {
+      mockGetPerms.mockResolvedValue({ status: 'denied' } as any);
+      const target = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      expect(await scheduleFastGoalNotification(target)).toBeNull();
+      expect(mockSchedule).not.toHaveBeenCalled();
+    });
+
+    it('returns null on an invalid date string', async () => {
+      expect(await scheduleFastGoalNotification('not-a-date')).toBeNull();
+      expect(mockSchedule).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('dismissDeliveredNotification', () => {
+    it('dismisses by identifier', async () => {
+      await dismissDeliveredNotification('n-1');
+      expect(mockDismiss).toHaveBeenCalledWith('n-1');
+    });
+
+    it('swallows errors', async () => {
+      mockDismiss.mockRejectedValue(new Error('boom'));
+      await expect(dismissDeliveredNotification('n-1')).resolves.toBeUndefined();
     });
   });
 
@@ -152,6 +272,53 @@ describe('notifications service', () => {
     });
   });
 
+  describe('notifications-enabled toggle', () => {
+    it('updates the in-memory value when toggled', async () => {
+      await setNotificationsEnabled(false);
+      expect(useAppPreferencesStore.getState().notificationsEnabled).toBe(false);
+
+      await setNotificationsEnabled(true);
+      expect(useAppPreferencesStore.getState().notificationsEnabled).toBe(true);
+    });
+
+    it('skips scheduling a rest notification when disabled', async () => {
+      await setNotificationsEnabled(false);
+      expect(await scheduleRestNotification('Bench Press', 60)).toBeNull();
+      expect(mockSchedule).not.toHaveBeenCalled();
+      expect(mockGetPerms).not.toHaveBeenCalled();
+    });
+
+    it('skips scheduling a fast-goal notification when disabled', async () => {
+      await setNotificationsEnabled(false);
+      const target = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      expect(await scheduleFastGoalNotification(target)).toBeNull();
+      expect(mockSchedule).not.toHaveBeenCalled();
+      expect(mockGetPerms).not.toHaveBeenCalled();
+    });
+
+    it('cancels already-scheduled notifications when turned off', async () => {
+      await setNotificationsEnabled(false);
+      expect(mockCancelAll).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not cancel scheduled notifications when turned on', async () => {
+      await setNotificationsEnabled(true);
+      expect(mockCancelAll).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('cancelAllScheduledNotifications', () => {
+    it('calls the expo cancel-all API', async () => {
+      await cancelAllScheduledNotifications();
+      expect(mockCancelAll).toHaveBeenCalledTimes(1);
+    });
+
+    it('swallows errors', async () => {
+      mockCancelAll.mockRejectedValue(new Error('boom'));
+      await expect(cancelAllScheduledNotifications()).resolves.toBeUndefined();
+    });
+  });
+
   describe('cancelScheduledNotification', () => {
     it('no-ops on null', async () => {
       await cancelScheduledNotification(null);
@@ -166,6 +333,65 @@ describe('notifications service', () => {
     it('swallows errors', async () => {
       mockCancel.mockRejectedValue(new Error('boom'));
       await expect(cancelScheduledNotification('abc')).resolves.toBeUndefined();
+    });
+  });
+
+  describe('maybePromptForExactAlarmPermission', () => {
+    const mockCanExact =
+      ExactAlarmBridge.canScheduleExactAlarms as jest.MockedFunction<
+        typeof ExactAlarmBridge.canScheduleExactAlarms
+      >;
+    const mockOpenSettings =
+      ExactAlarmBridge.openExactAlarmSettings as jest.MockedFunction<
+        typeof ExactAlarmBridge.openExactAlarmSettings
+      >;
+    let alertSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+      mockCanExact.mockReset().mockResolvedValue(false);
+      mockOpenSettings.mockReset().mockResolvedValue(undefined);
+    });
+
+    afterEach(() => {
+      alertSpy.mockRestore();
+    });
+
+    it('prompts once and persists the shown flag', async () => {
+      await maybePromptForExactAlarmPermission();
+      expect(alertSpy).toHaveBeenCalledTimes(1);
+
+      await maybePromptForExactAlarmPermission();
+      expect(alertSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not prompt when exact alarms are already allowed', async () => {
+      mockCanExact.mockResolvedValue(true);
+      await maybePromptForExactAlarmPermission();
+      expect(alertSpy).not.toHaveBeenCalled();
+    });
+
+    it('does not prompt when the notifications toggle is off', async () => {
+      useAppPreferencesStore.getState().setNotificationsEnabled(false);
+      await maybePromptForExactAlarmPermission();
+      expect(alertSpy).not.toHaveBeenCalled();
+    });
+
+    it('does not prompt without OS notification permission', async () => {
+      mockGetPerms.mockResolvedValue({ status: 'denied' } as any);
+      await maybePromptForExactAlarmPermission();
+      expect(alertSpy).not.toHaveBeenCalled();
+    });
+
+    it('the settings button opens the exact-alarm grant screen', async () => {
+      await maybePromptForExactAlarmPermission();
+      const buttons = alertSpy.mock.calls[0][2] as {
+        text: string;
+        onPress?: () => void;
+      }[];
+      const openButton = buttons.find((b) => b.text === 'Open Settings');
+      openButton?.onPress?.();
+      expect(mockOpenSettings).toHaveBeenCalledTimes(1);
     });
   });
 });
